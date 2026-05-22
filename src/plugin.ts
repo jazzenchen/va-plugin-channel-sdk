@@ -166,26 +166,47 @@ async function runInner<
       async requestPermission(
         params: RequestPermissionRequest,
       ): Promise<RequestPermissionResponse> {
-        const toolTitle =
-          (params.toolCall as { title?: string } | undefined)?.title ?? "?";
-        const optCount = params.options?.length ?? 0;
         log(
-          "info",
-          `requestPermission called chat=${params.sessionId} tool="${toolTitle}" options=${optCount}`,
+          "warn",
+          `legacy requestPermission without chat target ignored session=${params.sessionId}`,
         );
-        if (!renderer) {
-          return { outcome: { outcome: "cancelled" } };
-        }
-        if (!params.options || params.options.length === 0) {
-          return { outcome: { outcome: "cancelled" } };
-        }
-        try {
-          const optionId = await renderer.requestPermission(params);
-          log("info", `requestPermission resolved optionId=${optionId}`);
-          return { outcome: { outcome: "selected", optionId } };
-        } catch (err) {
-          log("error", `requestPermission failed: ${extractErrorMessage(err)}`);
-          return { outcome: { outcome: "cancelled" } };
+        return { outcome: { outcome: "cancelled" } };
+      },
+
+      async extMethod(
+        method: string,
+        params: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> {
+        switch (stripExtPrefix(method)) {
+          case "va/request_permission": {
+            const chatId = chatIdFromTarget(params.target);
+            const request = params.request;
+            if (!chatId || !renderer || !isRequestPermissionRequest(request)) {
+              log("warn", "invalid va/request_permission request");
+              return cancelledPermissionResponse();
+            }
+            const toolTitle =
+              (request.toolCall as { title?: string } | undefined)?.title ?? "?";
+            const optCount = request.options?.length ?? 0;
+            log(
+              "info",
+              `requestPermission called chat=${chatId} session=${request.sessionId} tool="${toolTitle}" options=${optCount}`,
+            );
+            if (!request.options || request.options.length === 0) {
+              return cancelledPermissionResponse();
+            }
+            try {
+              const optionId = await renderer.requestPermission(chatId, request);
+              log("info", `requestPermission resolved optionId=${optionId}`);
+              return { outcome: { outcome: "selected", optionId } };
+            } catch (err) {
+              log("error", `requestPermission failed: ${extractErrorMessage(err)}`);
+              return cancelledPermissionResponse();
+            }
+          }
+          default:
+            log("warn", `unhandled ext_method: ${method}`);
+            return {};
         }
       },
 
@@ -219,12 +240,20 @@ async function runInner<
             }
             break;
           }
-          case "va/session_update": {
-            const notification = params.notification;
-            if (chatId && renderer && isSessionNotification(notification)) {
-              renderer.onSessionUpdate(chatId, notification);
+          case "va/thread_reply": {
+            const targetChatId = chatIdFromTarget(params.target);
+            const reply = isRecord(params.reply) ? params.reply : undefined;
+            const payload = reply && isRecord(reply.payload) ? reply.payload : undefined;
+            const notification = payload?.notification;
+            if (
+              targetChatId &&
+              renderer &&
+              payload?.kind === "acp_session_notification" &&
+              isSessionNotification(notification)
+            ) {
+              renderer.onSessionUpdate(targetChatId, notification);
             } else {
-              log("warn", "invalid va/session_update notification");
+              log("warn", "invalid va/thread_reply notification");
             }
             break;
           }
@@ -336,4 +365,32 @@ function isSessionNotification(value: unknown): value is SessionNotification {
     !!record.update &&
     typeof record.update === "object"
   );
+}
+
+function isRequestPermissionRequest(value: unknown): value is RequestPermissionRequest {
+  if (!value || typeof value !== "object") return false;
+  const record = value as {
+    sessionId?: unknown;
+    toolCall?: unknown;
+    options?: unknown;
+  };
+  return (
+    typeof record.sessionId === "string" &&
+    !!record.toolCall &&
+    typeof record.toolCall === "object" &&
+    Array.isArray(record.options)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function chatIdFromTarget(target: unknown): string | undefined {
+  if (!isRecord(target)) return undefined;
+  return typeof target.chatId === "string" ? target.chatId : undefined;
+}
+
+function cancelledPermissionResponse(): RequestPermissionResponse {
+  return { outcome: { outcome: "cancelled" } };
 }

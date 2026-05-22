@@ -419,8 +419,21 @@ export abstract class BlockRenderer<TRef = string> {
    * Never rejects on render errors — falls back to the "reject_once" option
    * if present, otherwise the first option, so the agent is never left hanging.
    */
-  async requestPermission(request: RequestPermissionRequest): Promise<string> {
-    const chatId = request.sessionId;
+  async requestPermission(request: RequestPermissionRequest): Promise<string>;
+  async requestPermission(chatId: string, request: RequestPermissionRequest): Promise<string>;
+  async requestPermission(
+    chatIdOrRequest: string | RequestPermissionRequest,
+    maybeRequest?: RequestPermissionRequest,
+  ): Promise<string> {
+    const chatId =
+      typeof chatIdOrRequest === "string"
+        ? chatIdOrRequest
+        : chatIdOrRequest.sessionId;
+    const request =
+      typeof chatIdOrRequest === "string" ? maybeRequest : chatIdOrRequest;
+    if (!request) {
+      throw new Error("requestPermission requires a request");
+    }
     const callbackId = generateCallbackId();
     // Only one pending per chat. A new request on the same chat implicitly
     // cancels the old (shouldn't happen in practice because ACP serializes
