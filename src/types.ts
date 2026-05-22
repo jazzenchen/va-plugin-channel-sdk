@@ -56,6 +56,24 @@ export interface CommandEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Session info
+// ---------------------------------------------------------------------------
+
+export interface ChannelSessionInfo {
+  workspaceId: string;
+  workspacePath: string;
+  threadId: string;
+  agent: {
+    id: string;
+    name: string;
+    version?: string;
+    profileId?: string;
+  };
+  sessionId: string;
+  start: "new" | "resumed";
+}
+
+// ---------------------------------------------------------------------------
 // Block rendering
 // ---------------------------------------------------------------------------
 

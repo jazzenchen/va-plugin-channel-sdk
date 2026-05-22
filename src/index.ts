@@ -59,6 +59,7 @@ export type {
 // Types used in BlockRenderer overrides
 export type {
   BlockKind,
+  ChannelSessionInfo,
   CommandEntry,
   VerboseConfig,
   BlockRendererOptions,

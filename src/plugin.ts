@@ -30,6 +30,7 @@ import { connectToHost, stripExtPrefix } from "./connection.js";
 import { extractErrorMessage } from "./errors.js";
 import { BlockRenderer } from "./renderer.js";
 import type {
+  ChannelSessionInfo,
   RequestPermissionRequest,
   RequestPermissionResponse,
   SessionNotification,
@@ -227,16 +228,19 @@ async function runInner<
             const agentName = typeof params.agent === "string" ? params.agent : "unknown";
             const version = typeof params.version === "string" ? params.version : "";
             log("info", `agent_ready: ${agentName} v${version}`);
-            if (chatId && renderer) {
-              renderer.onAgentReady(chatId, agentName, version);
-            }
             break;
           }
           case "va/session_ready": {
             const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
             log("info", `session_ready: ${sessionId}`);
-            if (chatId && renderer) {
-              renderer.onSessionReady(chatId, sessionId);
+            break;
+          }
+          case "va/session_info": {
+            const info = parseChannelSessionInfo(params.info);
+            if (chatId && renderer && info) {
+              renderer.onSessionInfo(chatId, info);
+            } else {
+              log("warn", "invalid va/session_info notification");
             }
             break;
           }
@@ -323,6 +327,36 @@ async function runInner<
   clearInterval(heartbeatHandle);
   await bot.stop();
   process.exit(0);
+}
+
+function parseChannelSessionInfo(value: unknown): ChannelSessionInfo | undefined {
+  if (!isRecord(value)) return undefined;
+  const agent = isRecord(value.agent) ? value.agent : undefined;
+  if (!agent) return undefined;
+  if (
+    typeof value.workspaceId !== "string" ||
+    typeof value.workspacePath !== "string" ||
+    typeof value.threadId !== "string" ||
+    typeof value.sessionId !== "string" ||
+    (value.start !== "new" && value.start !== "resumed") ||
+    typeof agent.id !== "string" ||
+    typeof agent.name !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    workspaceId: value.workspaceId,
+    workspacePath: value.workspacePath,
+    threadId: value.threadId,
+    sessionId: value.sessionId,
+    start: value.start,
+    agent: {
+      id: agent.id,
+      name: agent.name,
+      version: typeof agent.version === "string" ? agent.version : undefined,
+      profileId: typeof agent.profileId === "string" ? agent.profileId : undefined,
+    },
+  };
 }
 
 /** Heartbeat cadence. Paired with the host's 90s watchdog — a single missed

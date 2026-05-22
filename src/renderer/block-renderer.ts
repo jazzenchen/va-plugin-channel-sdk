@@ -51,7 +51,13 @@ import type {
   RequestPermissionRequest,
   SessionNotification,
 } from "@agentclientprotocol/sdk";
-import type { BlockKind, BlockRendererOptions, CommandEntry, VerboseConfig } from "../types.js";
+import type {
+  BlockKind,
+  BlockRendererOptions,
+  ChannelSessionInfo,
+  CommandEntry,
+  VerboseConfig,
+} from "../types.js";
 import type {
   ChannelState,
   ConsumedSessionUpdate,
@@ -356,14 +362,37 @@ export abstract class BlockRenderer<TRef = string> {
     this.sendText(chatId, text).catch(() => {});
   }
 
-  /** Handle `va/agent_ready` from host. */
-  onAgentReady(chatId: string, agent: string, version: string): void {
-    this.sendText(chatId, `🤖 Agent: ${agent} v${version}`).catch(() => {});
+  /** Handle `va/session_info` from host. */
+  onSessionInfo(chatId: string, info: ChannelSessionInfo): void {
+    const agentVersion = info.agent.version ? ` v${info.agent.version}` : "";
+    const profile = info.agent.profileId ?? "default";
+    const sessionLine =
+      info.start === "new"
+        ? `New session started: ${info.sessionId}`
+        : `Continuing from session: ${info.sessionId}`;
+    this.sendText(
+      chatId,
+      [
+        "ℹ️ VibeAround session",
+        `Workspace: ${info.workspacePath}`,
+        `Agent: ${info.agent.name}${agentVersion}`,
+        `Profile: ${profile}`,
+        sessionLine,
+      ].join("\n"),
+    ).catch(() => {});
   }
 
-  /** Handle `va/session_ready` from host. */
+  /** @deprecated `va/session_info` carries the visible startup card. */
+  onAgentReady(chatId: string, agent: string, version: string): void {
+    void chatId;
+    void agent;
+    void version;
+  }
+
+  /** @deprecated `va/session_info` carries the visible startup card. */
   onSessionReady(chatId: string, sessionId: string): void {
-    this.sendText(chatId, `📋 Session: ${sessionId}`).catch(() => {});
+    void chatId;
+    void sessionId;
   }
 
   /**
