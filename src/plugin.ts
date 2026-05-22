@@ -219,6 +219,15 @@ async function runInner<
             }
             break;
           }
+          case "va/session_update": {
+            const notification = params.notification;
+            if (chatId && renderer && isSessionNotification(notification)) {
+              renderer.onSessionUpdate(chatId, notification);
+            } else {
+              log("warn", "invalid va/session_update notification");
+            }
+            break;
+          }
           case "va/command_menu": {
             const systemCommands = Array.isArray(params.systemCommands) ? params.systemCommands : [];
             const agentCommands = Array.isArray(params.agentCommands) ? params.agentCommands : [];
@@ -317,4 +326,14 @@ function startHeartbeat<TBot>(
       log("warn", `heartbeat send failed: ${extractErrorMessage(err)}`);
     }
   }, HEARTBEAT_INTERVAL_MS);
+}
+
+function isSessionNotification(value: unknown): value is SessionNotification {
+  if (!value || typeof value !== "object") return false;
+  const record = value as { sessionId?: unknown; update?: unknown };
+  return (
+    typeof record.sessionId === "string" &&
+    !!record.update &&
+    typeof record.update === "object"
+  );
 }

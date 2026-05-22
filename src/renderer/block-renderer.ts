@@ -214,10 +214,22 @@ export abstract class BlockRenderer<TRef = string> {
    *
    * Called automatically by `runChannelPlugin` — plugins don't call this directly.
    */
-  onSessionUpdate(notification: SessionNotification): void {
-    // sessionId from ACP = chatId (the host replaces the real agent session
-    // ID with the chat ID before forwarding to the plugin).
-    const chatId = notification.sessionId;
+  onSessionUpdate(notification: SessionNotification): void;
+  onSessionUpdate(chatId: string, notification: SessionNotification): void;
+  onSessionUpdate(
+    chatIdOrNotification: string | SessionNotification,
+    maybeNotification?: SessionNotification,
+  ): void {
+    const chatId =
+      typeof chatIdOrNotification === "string"
+        ? chatIdOrNotification
+        : chatIdOrNotification.sessionId;
+    const notification =
+      typeof chatIdOrNotification === "string"
+        ? maybeNotification
+        : chatIdOrNotification;
+    if (!notification) return;
+
     const rawUpdate = notification.update as unknown as { sessionUpdate: string };
     const variant = rawUpdate.sessionUpdate;
     if (
