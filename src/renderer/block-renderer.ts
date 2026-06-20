@@ -7,8 +7,9 @@
  *   text chunk, text chunk, tool call, tool update, text chunk, …
  *
  * Each contiguous run of the **same kind** (text / thinking / tool) is grouped
- * into one "block". When the kind changes, the current block is **sealed**
- * (no more edits) and a new block starts.
+ * into one "block". When the kind changes, or when an out-of-band interaction
+ * like a permission request interrupts the turn, the current block is
+ * **sealed** (no more edits) and a new block starts.
  *
  * Blocks are rendered to the platform by subclass-implemented `sendBlock` and
  * `editBlock`. The renderer handles:
@@ -463,6 +464,9 @@ export abstract class BlockRenderer<TRef = string> {
     if (!request) {
       throw new Error("requestPermission requires a request");
     }
+
+    await this.sealActiveBlock(chatId);
+
     const callbackId = generateCallbackId();
     // Only one pending per chat. A new request on the same chat implicitly
     // cancels the old (shouldn't happen in practice because ACP serializes
@@ -666,6 +670,24 @@ export abstract class BlockRenderer<TRef = string> {
     }
 
     this.scheduleFlush(chatId, state);
+  }
+
+  private async sealActiveBlock(chatId: string): Promise<void> {
+    const state = this.states.get(chatId);
+    if (!state) return;
+
+    if (state.flushTimer) {
+      clearTimeout(state.flushTimer);
+      state.flushTimer = null;
+    }
+
+    const last = state.blocks.at(-1);
+    if (last && !last.sealed) {
+      last.sealed = true;
+      this.enqueueFlush(state, last);
+    }
+
+    await state.sendChain;
   }
 
   private scheduleFlush(chatId: string, state: ChannelState<TRef>): void {
