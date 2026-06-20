@@ -76,6 +76,8 @@ import {
   tryParsePermissionAnswer,
 } from "./permissions.js";
 
+const MIN_EXACT_DUPLICATE_CHARS = 32;
+
 /**
  * Abstract base class for block-based rendering of ACP session streams.
  *
@@ -253,13 +255,13 @@ export abstract class BlockRenderer<TRef = string> {
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
         const delta = update.content?.text ?? "";
-        if (delta) this.appendToBlock(chatId, "text", delta);
+        if (delta) this.appendToBlock(chatId, "text", delta, update.messageId);
         break;
       }
       case "agent_thought_chunk": {
         if (!this.verbose.showThinking) return;
         const delta = update.content?.text ?? "";
-        if (delta) this.appendToBlock(chatId, "thinking", delta);
+        if (delta) this.appendToBlock(chatId, "thinking", delta, update.messageId);
         break;
       }
       case "tool_call": {
@@ -647,13 +649,30 @@ export abstract class BlockRenderer<TRef = string> {
   // Internal — block management
   // ---------------------------------------------------------------------------
 
-  private appendToBlock(chatId: string, kind: BlockKind, delta: string): void {
+  private appendToBlock(
+    chatId: string,
+    kind: BlockKind,
+    delta: string,
+    messageId?: string | null,
+  ): void {
     const state = this.ensureState(chatId);
+    const normalizedMessageId = normalizeMessageId(messageId);
 
     const last = state.blocks.at(-1);
+    if (last && this.isDuplicateBlockDelta(last, kind, delta, normalizedMessageId)) {
+      return;
+    }
 
-    if (last && !last.sealed && last.kind === kind) {
+    if (
+      last &&
+      !last.sealed &&
+      last.kind === kind &&
+      sameMessageBlock(last.messageId, normalizedMessageId)
+    ) {
       // Same kind — accumulate
+      if (!last.messageId && normalizedMessageId) {
+        last.messageId = normalizedMessageId;
+      }
       last.content += delta;
     } else {
       // Kind changed — seal current block and start a new one
@@ -666,10 +685,32 @@ export abstract class BlockRenderer<TRef = string> {
         }
         this.enqueueFlush(state, last);
       }
-      state.blocks.push({ chatId, kind, content: delta, ref: null, creating: false, sealed: false });
+      state.blocks.push({
+        chatId,
+        kind,
+        messageId: normalizedMessageId,
+        content: delta,
+        ref: null,
+        creating: false,
+        sealed: false,
+      });
     }
 
     this.scheduleFlush(chatId, state);
+  }
+
+  private isDuplicateBlockDelta(
+    block: ManagedBlock<TRef>,
+    kind: BlockKind,
+    delta: string,
+    messageId: string | null,
+  ): boolean {
+    if (block.kind !== kind || !block.content) return false;
+    if (block.content !== delta) return false;
+    return (
+      sameMessageBlock(block.messageId, messageId) ||
+      delta.length >= MIN_EXACT_DUPLICATE_CHARS
+    );
   }
 
   private async sealActiveBlock(chatId: string): Promise<void> {
@@ -754,4 +795,12 @@ export abstract class BlockRenderer<TRef = string> {
       block.creating = false;
     }
   }
+}
+
+function normalizeMessageId(messageId: string | null | undefined): string | null {
+  return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+}
+
+function sameMessageBlock(left: string | null, right: string | null): boolean {
+  return !left || !right || left === right;
 }
