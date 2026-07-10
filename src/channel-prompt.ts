@@ -18,7 +18,7 @@ export interface SendChannelPromptInput {
  * Apply the default channel addressing policy.
  *
  * Direct messages are always accepted. Group messages must explicitly address
- * the actor through a mention, command, or callback.
+ * the actor through a mention or callback.
  */
 export function isChannelPromptAllowed(
   context: ChannelInboundContext,
@@ -27,7 +27,6 @@ export function isChannelPromptAllowed(
 
   return (
     context.addressedBy === "mention" ||
-    context.addressedBy === "command" ||
     context.addressedBy === "callback"
   );
 }

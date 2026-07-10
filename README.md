@@ -88,9 +88,9 @@ await sendChannelPrompt(agent, {
 ```
 
 Direct messages are accepted without an explicit mention. Group messages are
-accepted only when addressed by mention, command, or callback; otherwise the
+accepted only when addressed by mention or callback; otherwise the
 helper returns `null` without calling ACP. Plugins remain responsible for
-translating their platform's DM, mention, command, and callback semantics into
+translating their platform's DM, mention, and callback semantics into
 `ChannelInboundContext`.
 
 ## BlockRenderer

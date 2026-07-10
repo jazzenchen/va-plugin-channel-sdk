@@ -27,14 +27,14 @@ test("direct messages are allowed without explicit addressing", () => {
   );
 });
 
-test("group messages require a mention, command, or callback", () => {
+test("group messages require a mention or callback", () => {
   assert.equal(
     isChannelPromptAllowed({ ...baseContext, addressedBy: "mention" }),
     true,
   );
   assert.equal(
     isChannelPromptAllowed({ ...baseContext, addressedBy: "command" }),
-    true,
+    false,
   );
   assert.equal(
     isChannelPromptAllowed({ ...baseContext, addressedBy: "callback" }),
