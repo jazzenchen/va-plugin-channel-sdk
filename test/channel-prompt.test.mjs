@@ -5,6 +5,8 @@ import {
   isChannelPromptAllowed,
   sendChannelPrompt,
 } from "../dist/index.js";
+import { parsePluginInitMeta } from "../dist/connection.js";
+import { resolveChannelIdentity } from "../dist/plugin.js";
 
 const baseContext = {
   channelInstanceId: "feishu-primary",
@@ -90,4 +92,51 @@ test("sendChannelPrompt ignores unaddressed group messages", async () => {
 
   assert.equal(result, null);
   assert.equal(called, false);
+});
+
+test("initialize metadata exposes channel routing identities", () => {
+  assert.deepEqual(
+    parsePluginInitMeta({
+      config: { token: "secret" },
+      cacheDir: "/tmp/channel-cache",
+      channelKind: "feishu",
+      channelInstanceId: "feishu-primary",
+      actorId: "codex-reviewer",
+    }),
+    {
+      config: { token: "secret" },
+      cacheDir: "/tmp/channel-cache",
+      channelKind: "feishu",
+      channelInstanceId: "feishu-primary",
+      actorId: "codex-reviewer",
+    },
+  );
+});
+
+test("channel identity uses stable compatibility fallbacks", () => {
+  assert.deepEqual(
+    resolveChannelIdentity(
+      {
+        channelKind: "feishu",
+        channelInstanceId: "feishu-primary",
+        actorId: "codex-reviewer",
+      },
+      "vibearound-feishu",
+    ),
+    {
+      channelInstanceId: "feishu-primary",
+      actorId: "codex-reviewer",
+    },
+  );
+  assert.deepEqual(
+    resolveChannelIdentity({ channelKind: "feishu" }, "vibearound-feishu"),
+    { channelInstanceId: "feishu", actorId: "feishu" },
+  );
+  assert.deepEqual(
+    resolveChannelIdentity({}, "vibearound-feishu"),
+    {
+      channelInstanceId: "vibearound-feishu",
+      actorId: "vibearound-feishu",
+    },
+  );
 });

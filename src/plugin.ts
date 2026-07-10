@@ -31,6 +31,7 @@ import { extractErrorMessage } from "./errors.js";
 import { BlockRenderer } from "./renderer.js";
 import type {
   ChannelSessionInfo,
+  PluginInitMeta,
   RequestPermissionRequest,
   RequestPermissionResponse,
   SessionNotification,
@@ -63,6 +64,10 @@ export interface CreateBotContext {
   agent: Agent;
   log: ChannelPluginLogger;
   cacheDir: string;
+  /** Stable identity of the configured channel/Bot instance. */
+  channelInstanceId: string;
+  /** Stable identity of the logical actor represented by the bot. */
+  actorId: string;
 }
 
 export interface VerboseOptions {
@@ -286,13 +291,21 @@ async function runInner<
 
   const cacheDir =
     meta.cacheDir ?? path.join(os.homedir(), ".vibearound", ".cache");
+  const { channelInstanceId, actorId } = resolveChannelIdentity(meta, spec.name);
 
   log(
     "info",
     `initialized, host=${agentInfo.name ?? "unknown"} cacheDir=${cacheDir}`,
   );
 
-  const bot = await spec.createBot({ config, agent, log, cacheDir });
+  const bot = await spec.createBot({
+    config,
+    agent,
+    log,
+    cacheDir,
+    channelInstanceId,
+    actorId,
+  });
 
   if (spec.afterCreate) {
     await spec.afterCreate(bot, log);
@@ -327,6 +340,22 @@ async function runInner<
   clearInterval(heartbeatHandle);
   await bot.stop();
   process.exit(0);
+}
+
+/** @internal Exported for contract tests; not part of the package entry point. */
+export function resolveChannelIdentity(
+  meta: Pick<
+    PluginInitMeta,
+    "channelKind" | "channelInstanceId" | "actorId"
+  >,
+  pluginName: string,
+): { channelInstanceId: string; actorId: string } {
+  const channelInstanceId =
+    meta.channelInstanceId ?? meta.channelKind ?? pluginName;
+  return {
+    channelInstanceId,
+    actorId: meta.actorId ?? channelInstanceId,
+  };
 }
 
 function parseChannelSessionInfo(value: unknown): ChannelSessionInfo | undefined {

@@ -156,4 +156,10 @@ export interface PluginInitMeta {
   config: Record<string, unknown>;
   /** Host-provided cache directory path for temporary files. */
   cacheDir?: string;
+  /** Channel kind registered by the host (for example, `feishu`). */
+  channelKind?: string;
+  /** Stable identity of this configured channel/Bot instance. */
+  channelInstanceId?: string;
+  /** Stable identity of the logical actor represented by this plugin. */
+  actorId?: string;
 }

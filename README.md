@@ -40,14 +40,32 @@ runChannelPlugin({
   name: "vibearound-myplatform",
   version: "0.1.0",
   requiredConfig: ["bot_token"],
-  createBot: ({ config, agent, log, cacheDir }) =>
-    new MyBot(config.bot_token as string, agent, log, cacheDir),
+  createBot: ({
+    config,
+    agent,
+    log,
+    cacheDir,
+    channelInstanceId,
+    actorId,
+  }) => new MyBot(
+    config.bot_token as string,
+    agent,
+    log,
+    cacheDir,
+    channelInstanceId,
+    actorId,
+  ),
   createRenderer: (bot, log, verbose) =>
     new MyRenderer(bot, log, verbose),
 });
 ```
 
 That's it. The SDK handles ACP connection, config validation, event routing, and shutdown.
+
+`createBot` always receives stable `channelInstanceId` and `actorId` values.
+Older hosts remain compatible: the SDK falls back from `channelInstanceId` to
+`channelKind`, then to the plugin name; `actorId` falls back to the resolved
+channel instance ID.
 
 ## Inbound channel prompts
 
