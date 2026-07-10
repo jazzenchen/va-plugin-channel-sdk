@@ -56,6 +56,35 @@ export interface CommandEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound conversation routing
+// ---------------------------------------------------------------------------
+
+/** Whether an inbound message comes from a direct message or group chat. */
+export type ConversationScope = "dm" | "group";
+
+/** How an inbound message explicitly addressed the channel actor. */
+export type AddressedBy =
+  | "dm"
+  | "mention"
+  | "command"
+  | "callback"
+  | "unaddressed";
+
+/** Platform-neutral routing metadata attached to an inbound channel prompt. */
+export interface ChannelInboundContext {
+  /** Configured channel/Bot instance that received the message. */
+  channelInstanceId: string;
+  /** Logical VibeAround actor addressed within that channel instance. */
+  actorId: string;
+  chatId: string;
+  topicId?: string;
+  senderId?: string;
+  platformMessageId?: string;
+  scope: ConversationScope;
+  addressedBy: AddressedBy;
+}
+
+// ---------------------------------------------------------------------------
 // Session info
 // ---------------------------------------------------------------------------
 

@@ -49,6 +49,32 @@ runChannelPlugin({
 
 That's it. The SDK handles ACP connection, config validation, event routing, and shutdown.
 
+## Inbound channel prompts
+
+Use `sendChannelPrompt` to attach platform-neutral routing metadata and apply
+the default addressing policy before sending a prompt to the host:
+
+```ts
+import { sendChannelPrompt } from "@vibearound/plugin-channel-sdk";
+
+await sendChannelPrompt(agent, {
+  context: {
+    channelInstanceId: "feishu-primary",
+    actorId: "codex-reviewer",
+    chatId,
+    scope: isDirectMessage ? "dm" : "group",
+    addressedBy: isDirectMessage ? "dm" : "mention",
+  },
+  prompt: [{ type: "text", text }],
+});
+```
+
+Direct messages are accepted without an explicit mention. Group messages are
+accepted only when addressed by mention, command, or callback; otherwise the
+helper returns `null` without calling ACP. Plugins remain responsible for
+translating their platform's DM, mention, command, and callback semantics into
+`ChannelInboundContext`.
+
 ## BlockRenderer
 
 Abstract base class that renders agent responses to your IM platform.

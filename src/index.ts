@@ -47,6 +47,13 @@ export { runChannelPlugin } from "./plugin.js";
 // Base class for stream rendering
 export { BlockRenderer } from "./renderer.js";
 
+// Inbound prompt routing
+export {
+  isChannelPromptAllowed,
+  sendChannelPrompt,
+} from "./channel-prompt.js";
+export type { SendChannelPromptInput } from "./channel-prompt.js";
+
 // Interfaces the plugin implements
 export type {
   ChannelBot,
@@ -58,9 +65,12 @@ export type {
 
 // Types used in BlockRenderer overrides
 export type {
+  AddressedBy,
   BlockKind,
+  ChannelInboundContext,
   ChannelSessionInfo,
   CommandEntry,
+  ConversationScope,
   VerboseConfig,
   BlockRendererOptions,
 } from "./types.js";
