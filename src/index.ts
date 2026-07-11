@@ -49,10 +49,15 @@ export { BlockRenderer } from "./renderer.js";
 
 // Inbound prompt routing
 export {
+  cancelChannelPrompt,
+  isChannelStopCommand,
   isChannelPromptAllowed,
   sendChannelPrompt,
 } from "./channel-prompt.js";
-export type { SendChannelPromptInput } from "./channel-prompt.js";
+export type {
+  CancelChannelPromptInput,
+  SendChannelPromptInput,
+} from "./channel-prompt.js";
 
 // Interfaces the plugin implements
 export type {

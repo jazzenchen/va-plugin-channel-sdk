@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  cancelChannelPrompt,
+  isChannelStopCommand,
   isChannelPromptAllowed,
   sendChannelPrompt,
 } from "../dist/index.js";
@@ -95,6 +97,31 @@ test("sendChannelPrompt ignores unaddressed group messages", async () => {
 
   assert.equal(result, null);
   assert.equal(called, false);
+});
+
+test("channel stop aliases cancel only the metadata route", async () => {
+  const calls = [];
+  const agent = {
+    cancel: async (params) => calls.push(params),
+  };
+  const context = {
+    channelInstanceId: "slack-primary",
+    actorId: "codex-reviewer",
+    chatId: "group-1",
+    topicId: "thread-1",
+    senderId: "user-1",
+    scope: "group",
+    addressedBy: "mention",
+  };
+
+  assert.equal(isChannelStopCommand("va stop"), true);
+  assert.equal(isChannelStopCommand("/cancel"), true);
+  assert.equal(isChannelStopCommand("please stop"), false);
+  assert.equal(await cancelChannelPrompt(agent, { context }), true);
+  assert.deepEqual(calls, [{
+    sessionId: "group-1",
+    _meta: { "va.channel": context },
+  }]);
 });
 
 test("initialize metadata exposes channel routing identities", () => {

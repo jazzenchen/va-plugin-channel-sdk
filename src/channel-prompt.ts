@@ -14,6 +14,10 @@ export interface SendChannelPromptInput {
   prompt: ContentBlock[];
 }
 
+export interface CancelChannelPromptInput {
+  context: ChannelInboundContext;
+}
+
 /**
  * Apply the default channel addressing policy.
  *
@@ -51,4 +55,33 @@ export async function sendChannelPrompt(
       "va.channel": input.context,
     },
   });
+}
+
+/** Recognize the channel-safe text aliases for interrupting an active turn. */
+export function isChannelStopCommand(text: string): boolean {
+  const normalized = text.trim().split(/\s+/).join(" ").toLowerCase();
+  return [
+    "/stop",
+    "/cancel",
+    "/va stop",
+    "/vibearound stop",
+    "va stop",
+    "vibearound stop",
+  ].includes(normalized);
+}
+
+/** Cancel only the route identified by the supplied channel context. */
+export async function cancelChannelPrompt(
+  agent: Agent,
+  input: CancelChannelPromptInput,
+): Promise<boolean> {
+  if (!isChannelPromptAllowed(input.context)) return false;
+
+  await agent.cancel({
+    sessionId: input.context.chatId,
+    _meta: {
+      "va.channel": input.context,
+    },
+  });
+  return true;
 }
