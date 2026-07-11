@@ -328,18 +328,32 @@ async function runInner<
   // place regardless of whether start() returns or runs forever.
   const heartbeatHandle = startHeartbeat(agent, bot, spec.healthCheck, log);
 
-  // Kick bot.start() but don't let it block heartbeat shutdown on
-  // conn.closed. Capture as a Promise we `.catch()` but don't `await`;
-  // the shutdown path comes from `conn.closed`.
+  // Kick bot.start() without requiring it to resolve: some platform SDKs
+  // keep that promise pending for the connection lifetime. A rejected start
+  // must still be fatal; logging and leaving the ACP process alive makes the
+  // host report Running forever for a bot that never connected.
   const startResult = Promise.resolve().then(() => bot.start());
-  startResult.catch((err) => log("error", `bot.start error: ${extractErrorMessage(err)}`));
-  log("info", "plugin started");
+  log("info", "plugin start requested");
 
-  await conn.closed;
+  await waitForDisconnectOrStartFailure(conn.closed, startResult);
   log("info", "connection closed, shutting down");
   clearInterval(heartbeatHandle);
   await bot.stop();
   process.exit(0);
+}
+
+/** @internal Exported for lifecycle contract tests. */
+export async function waitForDisconnectOrStartFailure(
+  disconnected: Promise<unknown>,
+  startResult: Promise<void>,
+): Promise<void> {
+  await Promise.race([
+    disconnected.then(() => undefined),
+    startResult.then(
+      () => new Promise<never>(() => {}),
+      (error) => Promise.reject(error),
+    ),
+  ]);
 }
 
 /** @internal Exported for contract tests; not part of the package entry point. */

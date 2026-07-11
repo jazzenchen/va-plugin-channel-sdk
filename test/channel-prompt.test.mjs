@@ -6,7 +6,10 @@ import {
   sendChannelPrompt,
 } from "../dist/index.js";
 import { parsePluginInitMeta } from "../dist/connection.js";
-import { resolveChannelIdentity } from "../dist/plugin.js";
+import {
+  resolveChannelIdentity,
+  waitForDisconnectOrStartFailure,
+} from "../dist/plugin.js";
 
 const baseContext = {
   channelInstanceId: "feishu-primary",
@@ -139,4 +142,36 @@ test("channel identity uses stable compatibility fallbacks", () => {
       actorId: "vibearound-feishu",
     },
   );
+});
+
+test("plugin start failures stay fatal even when the host remains connected", async () => {
+  const disconnected = new Promise(() => {});
+
+  await assert.rejects(
+    waitForDisconnectOrStartFailure(
+      disconnected,
+      Promise.reject(new Error("platform login failed")),
+    ),
+    /platform login failed/,
+  );
+});
+
+test("a resolved platform start keeps waiting for host disconnect", async () => {
+  let disconnect;
+  const disconnected = new Promise((resolve) => {
+    disconnect = resolve;
+  });
+  let settled = false;
+  const lifecycle = waitForDisconnectOrStartFailure(
+    disconnected,
+    Promise.resolve(),
+  ).then(() => {
+    settled = true;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  disconnect();
+  await lifecycle;
+  assert.equal(settled, true);
 });
