@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   cancelChannelPrompt,
+  channelTargetFromInboundContext,
   isChannelStopCommand,
   isChannelPromptAllowed,
   sendChannelPrompt,
@@ -79,6 +80,23 @@ test("sendChannelPrompt carries the route in ACP metadata", async () => {
       _meta: { "va.channel": baseContext },
     },
   ]);
+});
+
+test("inbound platform message identity becomes the output reply target", () => {
+  assert.deepEqual(
+    channelTargetFromInboundContext({
+      ...baseContext,
+      topicId: "thread-1",
+      platformMessageId: "message-1",
+    }),
+    {
+      channelInstanceId: "feishu-primary",
+      actorId: "codex-reviewer",
+      chatId: "chat-123",
+      topicId: "thread-1",
+      replyTo: "message-1",
+    },
+  );
 });
 
 test("sendChannelPrompt ignores unaddressed group messages", async () => {

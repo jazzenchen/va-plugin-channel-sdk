@@ -30,14 +30,14 @@
  *
  * ```ts
  * class MyRenderer extends BlockRenderer<string> {
- *   protected async sendText(chatId, text) {
- *     await myApi.sendMessage(chatId, text);
+ *   protected async sendText(target, text) {
+ *     await myApi.sendMessage(target.chatId, text);
  *   }
- *   protected async sendBlock(chatId, kind, content) {
- *     const msg = await myApi.sendMessage(chatId, content);
+ *   protected async sendBlock(target, kind, content) {
+ *     const msg = await myApi.sendMessage(target.chatId, content);
  *     return msg.id;
  *   }
- *   protected async editBlock(chatId, ref, kind, content, sealed) {
+ *   protected async editBlock(target, ref, kind, content, sealed) {
  *     await myApi.editMessage(ref, content);
  *   }
  * }
@@ -56,9 +56,11 @@ import type {
   BlockKind,
   BlockRendererOptions,
   ChannelSessionInfo,
+  ChannelTarget,
   CommandEntry,
   VerboseConfig,
 } from "../types.js";
+import { channelRouteKey, channelTargetKey } from "../types.js";
 import type {
   ChannelState,
   ConsumedSessionUpdate,
@@ -95,14 +97,10 @@ export abstract class BlockRenderer<TRef = string> {
 
   private states = new Map<string, ChannelState<TRef>>();
 
-  /** Platform API calls must remain ordered per chat even when the ACP
+  /** Platform API calls must remain ordered per target even when the ACP
    *  transport dispatches several notifications without awaiting the prior
-   *  handler. Different chats retain independent delivery lanes. */
+   *  handler. Different targets retain independent delivery lanes. */
   private deliveryChains = new Map<string, Promise<unknown>>();
-
-  /** The chatId of the most recent prompt. Used as fallback target for
-   *  notifications that arrive without an explicit chatId. */
-  private lastActiveChatId: string | null = null;
 
   /**
    * Pending permission requests, keyed by callback id. Resolvers are invoked
@@ -115,7 +113,8 @@ export abstract class BlockRenderer<TRef = string> {
     {
       resolve: (optionId: string) => void;
       reject: (err: Error) => void;
-      chatId: string;
+      target: ChannelTarget;
+      routeKey: string;
       options: ReadonlyArray<{
         kind: string;
         optionId: string;
@@ -124,10 +123,12 @@ export abstract class BlockRenderer<TRef = string> {
     }
   >();
 
-  /** Index chatId → callbackId so we can locate pending by channel in O(1).
-   *  Each chat can only have one pending permission at a time (ACP semantics:
+  /** Index stable route key → callbackId for O(1) lookup.
+   *  `replyTo` is deliberately excluded because a text permission answer is a
+   *  new platform message. Each route can only have one pending permission
+   *  at a time (ACP semantics:
    *  a turn is blocked while a requestPermission is in flight). */
-  private pendingByChat = new Map<string, string>();
+  private pendingByRoute = new Map<string, string>();
 
   constructor(options: BlockRendererOptions = {}) {
     this.streaming = options.streaming ?? true;
@@ -147,7 +148,7 @@ export abstract class BlockRenderer<TRef = string> {
    * Send a plain text message to the IM. Used for system text, agent ready
    * notifications, session ready, and error messages.
    */
-  protected abstract sendText(chatId: string, text: string): Promise<void>;
+  protected abstract sendText(target: ChannelTarget, text: string): Promise<void>;
 
   /**
    * Send a new streaming block message to the platform.
@@ -156,7 +157,7 @@ export abstract class BlockRenderer<TRef = string> {
    * `editBlock` calls. Return `null` if editing is not supported.
    */
   protected abstract sendBlock(
-    chatId: string,
+    target: ChannelTarget,
     kind: BlockKind,
     content: string,
   ): Promise<TRef | null>;
@@ -175,7 +176,7 @@ export abstract class BlockRenderer<TRef = string> {
    *   Use to switch from a "streaming" card format to a finalized one.
    */
   protected editBlock?(
-    chatId: string,
+    target: ChannelTarget,
     ref: TRef,
     kind: BlockKind,
     content: string,
@@ -204,7 +205,7 @@ export abstract class BlockRenderer<TRef = string> {
    * Called after the last block has been flushed and the turn is complete.
    * Override to perform cleanup (e.g. remove a "typing" indicator).
    */
-  protected onAfterTurnEnd(_chatId: string): Promise<void> {
+  protected onAfterTurnEnd(_target: ChannelTarget): Promise<void> {
     return Promise.resolve();
   }
 
@@ -212,8 +213,8 @@ export abstract class BlockRenderer<TRef = string> {
    * Called after a turn error. Default sends an error message via sendText.
    * Override for platform-specific error rendering (e.g. error card).
    */
-  protected async onAfterTurnError(chatId: string, error: string): Promise<void> {
-    await this.enqueueDelivery(chatId, () => this.sendText(chatId, `❌ Error: ${error}`));
+  protected async onAfterTurnError(target: ChannelTarget, error: string): Promise<void> {
+    await this.enqueueDelivery(target, () => this.sendText(target, `❌ Error: ${error}`));
   }
 
   // ---------------------------------------------------------------------------
@@ -228,22 +229,7 @@ export abstract class BlockRenderer<TRef = string> {
    *
    * Called automatically by `runChannelPlugin` — plugins don't call this directly.
    */
-  onSessionUpdate(notification: SessionNotification): void;
-  onSessionUpdate(chatId: string, notification: SessionNotification): void;
-  onSessionUpdate(
-    chatIdOrNotification: string | SessionNotification,
-    maybeNotification?: SessionNotification,
-  ): void {
-    const chatId =
-      typeof chatIdOrNotification === "string"
-        ? chatIdOrNotification
-        : chatIdOrNotification.sessionId;
-    const notification =
-      typeof chatIdOrNotification === "string"
-        ? maybeNotification
-        : chatIdOrNotification;
-    if (!notification) return;
-
+  onSessionUpdate(target: ChannelTarget, notification: SessionNotification): void {
     const rawUpdate = notification.update as unknown as { sessionUpdate: string };
     const variant = rawUpdate.sessionUpdate;
     if (
@@ -260,27 +246,27 @@ export abstract class BlockRenderer<TRef = string> {
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
         const delta = update.content?.text ?? "";
-        if (delta) this.appendToBlock(chatId, "text", delta, update.messageId);
+        if (delta) this.appendToBlock(target, "text", delta, update.messageId);
         break;
       }
       case "agent_thought_chunk": {
         if (!this.verbose.showThinking) return;
         const delta = update.content?.text ?? "";
-        if (delta) this.appendToBlock(chatId, "thinking", delta, update.messageId);
+        if (delta) this.appendToBlock(target, "thinking", delta, update.messageId);
         break;
       }
       case "tool_call": {
         if (!this.verbose.showToolUse) return;
-        const state = this.ensureState(chatId);
+        const state = this.ensureState(target);
         const title = update.title ?? "tool";
         const kind = update.kind ?? undefined;
         state.toolCalls.set(update.toolCallId, { title, kind });
-        this.appendToBlock(chatId, "tool", `${kindIcon(kind)} ${title}\n`);
+        this.appendToBlock(target, "tool", `${kindIcon(kind)} ${title}\n`);
         break;
       }
       case "tool_call_update": {
         if (!this.verbose.showToolUse) return;
-        const state = this.ensureState(chatId);
+        const state = this.ensureState(target);
         const cached = state.toolCalls.get(update.toolCallId);
         const title = (update.title ?? cached?.title ?? "tool");
         const kind = (update.kind ?? cached?.kind) as ToolKind | undefined;
@@ -293,12 +279,12 @@ export abstract class BlockRenderer<TRef = string> {
           const line = summary
             ? `${icon} ${title}\n   ↳ ${summary}\n`
             : `${icon} ${title}\n`;
-          this.appendToBlock(chatId, "tool", line);
+          this.appendToBlock(target, "tool", line);
         }
         break;
       }
       case "current_mode_update": {
-        Promise.resolve(this.onCurrentModeUpdate(chatId, update.currentModeId)).catch(() => {});
+        Promise.resolve(this.onCurrentModeUpdate(target, update.currentModeId)).catch(() => {});
         break;
       }
     }
@@ -312,7 +298,7 @@ export abstract class BlockRenderer<TRef = string> {
    * Default implementation sends a text badge. Override to render a
    * platform-specific card / pinned message / status indicator.
    */
-  protected onCurrentModeUpdate(chatId: string, modeId: string): void | Promise<void> {
+  protected onCurrentModeUpdate(target: ChannelTarget, modeId: string): void | Promise<void> {
     const badges: Record<string, string> = {
       default: "🔓 Default mode",
       plan: "📋 Plan mode — agent will analyze without making changes",
@@ -321,19 +307,19 @@ export abstract class BlockRenderer<TRef = string> {
       dontAsk: "🔒 Don't-ask mode — unknown tools auto-denied",
     };
     const text = badges[modeId] ?? `Mode: ${modeId}`;
-    this.enqueueDelivery(chatId, () => this.sendText(chatId, text)).catch(() => {});
+    this.enqueueDelivery(target, () => this.sendText(target, text)).catch(() => {});
   }
 
   /**
-   * Call before sending a prompt. Tracks the active chatId and clears
+   * Call before sending a prompt. Clears
    * leftover state from a previous turn.
    */
-  onPromptSent(chatId: string): void {
-    this.clearPendingPermission(chatId);
-    this.lastActiveChatId = chatId;
-    const old = this.states.get(chatId);
+  onPromptSent(target: ChannelTarget): void {
+    const targetKey = channelTargetKey(target);
+    this.clearPendingPermission(target);
+    const old = this.states.get(targetKey);
     if (old?.flushTimer) clearTimeout(old.flushTimer);
-    this.states.set(chatId, {
+    this.states.set(targetKey, {
       blocks: [],
       flushTimer: null,
       lastEditMs: 0,
@@ -343,12 +329,13 @@ export abstract class BlockRenderer<TRef = string> {
   }
 
   /**
-   * Get the ChannelState for a chat, creating it lazily if needed.
+   * Get the ChannelState for a target, creating it lazily if needed.
    * Host-initiated notifications (e.g. tool_call without prior prompt) can
    * land before onPromptSent is called — this keeps them working.
    */
-  private ensureState(chatId: string): ChannelState<TRef> {
-    let state = this.states.get(chatId);
+  private ensureState(target: ChannelTarget): ChannelState<TRef> {
+    const targetKey = channelTargetKey(target);
+    let state = this.states.get(targetKey);
     if (!state) {
       state = {
         blocks: [],
@@ -357,7 +344,7 @@ export abstract class BlockRenderer<TRef = string> {
         sendChain: Promise.resolve(),
         toolCalls: new Map(),
       };
-      this.states.set(chatId, state);
+      this.states.set(targetKey, state);
     }
     return state;
   }
@@ -367,21 +354,21 @@ export abstract class BlockRenderer<TRef = string> {
   // ---------------------------------------------------------------------------
 
   /** Handle `va/system_text` from host. */
-  onSystemText(chatId: string, text: string): void {
-    this.enqueueDelivery(chatId, () => this.sendText(chatId, text)).catch(() => {});
+  onSystemText(target: ChannelTarget, text: string): void {
+    this.enqueueDelivery(target, () => this.sendText(target, text)).catch(() => {});
   }
 
   /** Handle `va/session_info` from host. */
-  onSessionInfo(chatId: string, info: ChannelSessionInfo): void {
+  onSessionInfo(target: ChannelTarget, info: ChannelSessionInfo): void {
     const agentVersion = info.agent.version ? ` v${info.agent.version}` : "";
     const profile = info.agent.profileId ?? "default";
     const sessionLine =
       info.start === "new"
         ? `New session started: ${info.sessionId}`
         : `Continuing from session: ${info.sessionId}`;
-    this.enqueueDelivery(chatId, () =>
+    this.enqueueDelivery(target, () =>
       this.sendText(
-        chatId,
+        target,
         [
           "ℹ️ VibeAround session",
           `Workspace: ${info.workspacePath}`,
@@ -394,15 +381,15 @@ export abstract class BlockRenderer<TRef = string> {
   }
 
   /** @deprecated `va/session_info` carries the visible startup card. */
-  onAgentReady(chatId: string, agent: string, version: string): void {
-    void chatId;
+  onAgentReady(target: ChannelTarget, agent: string, version: string): void {
+    void target;
     void agent;
     void version;
   }
 
   /** @deprecated `va/session_info` carries the visible startup card. */
-  onSessionReady(chatId: string, sessionId: string): void {
-    void chatId;
+  onSessionReady(target: ChannelTarget, sessionId: string): void {
+    void target;
     void sessionId;
   }
 
@@ -414,7 +401,7 @@ export abstract class BlockRenderer<TRef = string> {
    * inline keyboard).
    */
   onCommandMenu(
-    chatId: string,
+    target: ChannelTarget,
     systemCommands: CommandEntry[],
     agentCommands: CommandEntry[],
   ): void {
@@ -440,7 +427,7 @@ export abstract class BlockRenderer<TRef = string> {
       lines.push("Agent commands will appear after sending your first message.");
     }
 
-    this.enqueueDelivery(chatId, () => this.sendText(chatId, lines.join("\n"))).catch(() => {});
+    this.enqueueDelivery(target, () => this.sendText(target, lines.join("\n"))).catch(() => {});
   }
 
   // ---------------------------------------------------------------------------
@@ -459,31 +446,20 @@ export abstract class BlockRenderer<TRef = string> {
    * Never rejects on render errors — falls back to the "reject_once" option
    * if present, otherwise the first option, so the agent is never left hanging.
    */
-  async requestPermission(request: RequestPermissionRequest): Promise<string>;
-  async requestPermission(chatId: string, request: RequestPermissionRequest): Promise<string>;
   async requestPermission(
-    chatIdOrRequest: string | RequestPermissionRequest,
-    maybeRequest?: RequestPermissionRequest,
+    target: ChannelTarget,
+    request: RequestPermissionRequest,
   ): Promise<string> {
-    const chatId =
-      typeof chatIdOrRequest === "string"
-        ? chatIdOrRequest
-        : chatIdOrRequest.sessionId;
-    const request =
-      typeof chatIdOrRequest === "string" ? maybeRequest : chatIdOrRequest;
-    if (!request) {
-      throw new Error("requestPermission requires a request");
-    }
-
-    await this.sealActiveBlock(chatId);
+    const routeKey = channelRouteKey(target);
+    await this.sealActiveBlock(target);
 
     const callbackId = generateCallbackId();
-    // Only one pending per chat. A new request on the same chat implicitly
+    // Only one pending per target. A new request on the same target implicitly
     // cancels the old (shouldn't happen in practice because ACP serializes
     // per-session, but keep the invariant explicit).
-    const prior = this.pendingByChat.get(chatId);
+    const prior = this.pendingByRoute.get(routeKey);
     if (prior) {
-      this.clearPendingPermission(chatId);
+      this.clearPendingPermission(target);
     }
 
     const options: ReadonlyArray<{ kind: string; optionId: string; name: string }> =
@@ -494,14 +470,20 @@ export abstract class BlockRenderer<TRef = string> {
       }));
 
     return new Promise<string>((resolve, reject) => {
-      this.pendingPermissions.set(callbackId, { resolve, reject, chatId, options });
-      this.pendingByChat.set(chatId, callbackId);
-      Promise.resolve(this.onRequestPermission(chatId, request, callbackId)).catch((err) => {
+      this.pendingPermissions.set(callbackId, {
+        resolve,
+        reject,
+        target,
+        routeKey,
+        options,
+      });
+      this.pendingByRoute.set(routeKey, callbackId);
+      Promise.resolve(this.onRequestPermission(target, request, callbackId)).catch((err) => {
         // Render failed — fall back so the agent is never stuck.
         if (!this.pendingPermissions.has(callbackId)) return;
         this.pendingPermissions.delete(callbackId);
-        if (this.pendingByChat.get(chatId) === callbackId) {
-          this.pendingByChat.delete(chatId);
+        if (this.pendingByRoute.get(routeKey) === callbackId) {
+          this.pendingByRoute.delete(routeKey);
         }
         const fallback = fallbackOptionId(request);
         if (fallback) {
@@ -524,7 +506,7 @@ export abstract class BlockRenderer<TRef = string> {
   }
 
   /**
-   * Feed a new user text message into the pending permission flow for this chat.
+   * Feed a new user text message into the pending permission flow for this target.
    *
    * Semantics:
    *   - Parseable answer (number / keyword / optionId)  → resolve + return `true`
@@ -539,16 +521,17 @@ export abstract class BlockRenderer<TRef = string> {
    * `agent.prompt()`:
    *
    * ```ts
-   * if (streamHandler.consumePendingText(chatId, text)) return;
+   * if (streamHandler.consumePendingText(target, text)) return;
    * // else: forward as new prompt
    * ```
    */
-  consumePendingText(chatId: string, text: string): boolean {
-    const callbackId = this.pendingByChat.get(chatId);
+  consumePendingText(target: ChannelTarget, text: string): boolean {
+    const routeKey = channelRouteKey(target);
+    const callbackId = this.pendingByRoute.get(routeKey);
     if (!callbackId) return false;
     const entry = this.pendingPermissions.get(callbackId);
     if (!entry) {
-      this.pendingByChat.delete(chatId);
+      this.pendingByRoute.delete(routeKey);
       return false;
     }
 
@@ -571,7 +554,7 @@ export abstract class BlockRenderer<TRef = string> {
   /**
    * Render a permission request to the user. Eventually the user should
    * respond — either via button click → `resolvePermission(callbackId, optionId)`,
-   * or via text reply → the bot calls `consumePendingText(chatId, text)` before
+   * or via text reply → the bot calls `consumePendingText(target, text)` before
    * forwarding, which parses the text and resolves for us.
    *
    * Default implementation: send a numbered text prompt. That's it — we do
@@ -580,7 +563,7 @@ export abstract class BlockRenderer<TRef = string> {
    * buttons / inline keyboards instead.
    */
   protected async onRequestPermission(
-    chatId: string,
+    target: ChannelTarget,
     request: RequestPermissionRequest,
     _callbackId: string,
   ): Promise<void> {
@@ -591,7 +574,7 @@ export abstract class BlockRenderer<TRef = string> {
     const numbered = options.map((opt, i) => `  ${i + 1}. ${opt.name}`);
     const hint = `Reply with a number (1-${options.length}). Any other message cancels and continues.`;
     const prompt = [header, "", ...numbered, "", hint].join("\n");
-    await this.enqueueDelivery(chatId, () => this.sendText(chatId, prompt));
+    await this.enqueueDelivery(target, () => this.sendText(target, prompt));
   }
 
   /** Internal: resolve a pending permission, maintaining both lookup tables. */
@@ -602,19 +585,20 @@ export abstract class BlockRenderer<TRef = string> {
     const entry = this.pendingPermissions.get(callbackId);
     if (!entry) return false;
     this.pendingPermissions.delete(callbackId);
-    if (this.pendingByChat.get(entry.chatId) === callbackId) {
-      this.pendingByChat.delete(entry.chatId);
+    if (this.pendingByRoute.get(entry.routeKey) === callbackId) {
+      this.pendingByRoute.delete(entry.routeKey);
     }
     if (optionId !== null) entry.resolve(optionId);
     else entry.reject(new Error("permission request cancelled"));
     return true;
   }
 
-  private clearPendingPermission(chatId: string): void {
-    const callbackId = this.pendingByChat.get(chatId);
+  private clearPendingPermission(target: ChannelTarget): void {
+    const routeKey = channelRouteKey(target);
+    const callbackId = this.pendingByRoute.get(routeKey);
     if (!callbackId) return;
     const entry = this.pendingPermissions.get(callbackId);
-    this.pendingByChat.delete(chatId);
+    this.pendingByRoute.delete(routeKey);
     if (!entry) return;
     this.pendingPermissions.delete(callbackId);
 
@@ -632,9 +616,10 @@ export abstract class BlockRenderer<TRef = string> {
    * Seals and flushes the last block, then waits for all pending sends/edits
    * to complete before calling `onAfterTurnEnd`.
    */
-  async onTurnEnd(chatId: string): Promise<void> {
-    this.clearPendingPermission(chatId);
-    const state = this.states.get(chatId);
+  async onTurnEnd(target: ChannelTarget): Promise<void> {
+    const targetKey = channelTargetKey(target);
+    this.clearPendingPermission(target);
+    const state = this.states.get(targetKey);
     if (!state) return;
 
     if (state.flushTimer) {
@@ -649,8 +634,8 @@ export abstract class BlockRenderer<TRef = string> {
     }
 
     await state.sendChain;
-    this.states.delete(chatId);
-    await this.onAfterTurnEnd(chatId);
+    this.states.delete(targetKey);
+    await this.onAfterTurnEnd(target);
   }
 
   /**
@@ -658,12 +643,13 @@ export abstract class BlockRenderer<TRef = string> {
    *
    * Discards pending state and calls `onAfterTurnError`.
    */
-  async onTurnError(chatId: string, error: string): Promise<void> {
-    this.clearPendingPermission(chatId);
-    const state = this.states.get(chatId);
+  async onTurnError(target: ChannelTarget, error: string): Promise<void> {
+    const targetKey = channelTargetKey(target);
+    this.clearPendingPermission(target);
+    const state = this.states.get(targetKey);
     if (state?.flushTimer) clearTimeout(state.flushTimer);
-    this.states.delete(chatId);
-    await this.onAfterTurnError(chatId, error);
+    this.states.delete(targetKey);
+    await this.onAfterTurnError(target, error);
   }
 
   // ---------------------------------------------------------------------------
@@ -671,12 +657,12 @@ export abstract class BlockRenderer<TRef = string> {
   // ---------------------------------------------------------------------------
 
   private appendToBlock(
-    chatId: string,
+    target: ChannelTarget,
     kind: BlockKind,
     delta: string,
     messageId?: string | null,
   ): void {
-    const state = this.ensureState(chatId);
+    const state = this.ensureState(target);
     const normalizedMessageId = normalizeMessageId(messageId);
 
     const last = state.blocks.at(-1);
@@ -707,7 +693,7 @@ export abstract class BlockRenderer<TRef = string> {
         this.enqueueFlush(state, last);
       }
       state.blocks.push({
-        chatId,
+        target,
         kind,
         messageId: normalizedMessageId,
         content: delta,
@@ -717,7 +703,7 @@ export abstract class BlockRenderer<TRef = string> {
       });
     }
 
-    this.scheduleFlush(chatId, state);
+    this.scheduleFlush(target, state);
   }
 
   private isDuplicateBlockDelta(
@@ -734,8 +720,8 @@ export abstract class BlockRenderer<TRef = string> {
     );
   }
 
-  private async sealActiveBlock(chatId: string): Promise<void> {
-    const state = this.states.get(chatId);
+  private async sealActiveBlock(target: ChannelTarget): Promise<void> {
+    const state = this.states.get(channelTargetKey(target));
     if (!state) return;
 
     if (state.flushTimer) {
@@ -752,16 +738,16 @@ export abstract class BlockRenderer<TRef = string> {
     await state.sendChain;
   }
 
-  private scheduleFlush(chatId: string, state: ChannelState<TRef>): void {
+  private scheduleFlush(target: ChannelTarget, state: ChannelState<TRef>): void {
     if (state.flushTimer) return; // already scheduled
 
     state.flushTimer = setTimeout(() => {
       state.flushTimer = null;
-      this.flush(chatId, state);
+      this.flush(target, state);
     }, this.flushIntervalMs);
   }
 
-  private flush(chatId: string, state: ChannelState<TRef>): void {
+  private flush(target: ChannelTarget, state: ChannelState<TRef>): void {
     const block = state.blocks.at(-1);
     if (!block || block.sealed || !block.content) return;
 
@@ -780,7 +766,7 @@ export abstract class BlockRenderer<TRef = string> {
       if (!state.flushTimer) {
         state.flushTimer = setTimeout(() => {
           state.flushTimer = null;
-          this.flush(chatId, state);
+          this.flush(target, state);
         }, delay);
       }
       return;
@@ -803,15 +789,15 @@ export abstract class BlockRenderer<TRef = string> {
       if (block.ref === null && !block.creating) {
         // First send — use sentinel to prevent concurrent creates
         block.creating = true;
-        block.ref = await this.enqueueDelivery(block.chatId, () =>
-          this.sendBlock(block.chatId, block.kind, content),
+        block.ref = await this.enqueueDelivery(block.target, () =>
+          this.sendBlock(block.target, block.kind, content),
         );
         block.creating = false;
         state.lastEditMs = Date.now();
       } else if (block.ref !== null && !block.creating && this.streaming && this.editBlock) {
         // Subsequent update — edit in-place (streaming mode only)
-        await this.enqueueDelivery(block.chatId, () =>
-          this.editBlock!(block.chatId, block.ref!, block.kind, content, block.sealed),
+        await this.enqueueDelivery(block.target, () =>
+          this.editBlock!(block.target, block.ref!, block.kind, content, block.sealed),
         );
         state.lastEditMs = Date.now();
       }
@@ -821,13 +807,17 @@ export abstract class BlockRenderer<TRef = string> {
     }
   }
 
-  private enqueueDelivery<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.deliveryChains.get(chatId) ?? Promise.resolve();
+  private enqueueDelivery<T>(
+    target: ChannelTarget,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const targetKey = channelTargetKey(target);
+    const previous = this.deliveryChains.get(targetKey) ?? Promise.resolve();
     const next = previous.catch(() => {}).then(operation);
-    this.deliveryChains.set(chatId, next);
+    this.deliveryChains.set(targetKey, next);
     void next.finally(() => {
-      if (this.deliveryChains.get(chatId) === next) {
-        this.deliveryChains.delete(chatId);
+      if (this.deliveryChains.get(targetKey) === next) {
+        this.deliveryChains.delete(targetKey);
       }
     }).catch(() => {});
     return next;

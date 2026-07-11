@@ -1,7 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { BlockRenderer } from "../dist/index.js";
+import { BlockRenderer, channelTargetKey } from "../dist/index.js";
+import { parseChannelTarget } from "../dist/plugin.js";
+
+function target(overrides = {}) {
+  return {
+    channelInstanceId: "slack-work",
+    actorId: "bot-primary",
+    chatId: "chat-shared",
+    topicId: "thread-main",
+    replyTo: "message-main",
+    ...overrides,
+  };
+}
 
 class RecordingRenderer extends BlockRenderer {
   sent = [];
@@ -10,24 +22,24 @@ class RecordingRenderer extends BlockRenderer {
     super({ streaming: false });
   }
 
-  async sendText(chatId, text) {
-    this.sent.push({ chatId, kind: "system", content: text });
+  async sendText(channelTarget, text) {
+    this.sent.push({ target: channelTarget, kind: "system", content: text });
   }
 
-  async sendBlock(chatId, kind, content) {
-    this.sent.push({ chatId, kind, content });
-    return `${chatId}-${this.sent.length}`;
+  async sendBlock(channelTarget, kind, content) {
+    this.sent.push({ target: channelTarget, kind, content });
+    return `${channelTargetKey(channelTarget)}-${this.sent.length}`;
   }
 }
 
 class DelayedTextRenderer extends BlockRenderer {
   sent = [];
 
-  async sendText(chatId, text) {
+  async sendText(channelTarget, text) {
     if (text === "first") {
       await new Promise((resolve) => setTimeout(resolve, 30));
     }
-    this.sent.push(`${chatId}:${text}`);
+    this.sent.push(`${channelTargetKey(channelTarget)}:${text}`);
   }
 
   async sendBlock() {
@@ -52,59 +64,123 @@ function textChunk(sessionId, text, messageId) {
   };
 }
 
-test("interleaved async replies keep independent route render state", async () => {
+test("same chat with different actor, topic, or replyTo keeps isolated render state", async () => {
   const renderer = new RecordingRenderer();
-  renderer.onPromptSent("chat-a");
-  renderer.onPromptSent("chat-b");
+  const actorA = target({ actorId: "bot-a", replyTo: "message-a" });
+  const actorB = target({ actorId: "bot-b", replyTo: "message-a" });
+  const topicB = target({ topicId: "thread-b", replyTo: "message-a" });
+  const replyB = target({ replyTo: "message-b" });
+  const targets = [actorA, actorB, topicB, replyB];
 
-  renderer.onSessionUpdate("chat-a", textChunk("session-a", "A1", "message-a"));
-  renderer.onSessionUpdate("chat-b", textChunk("session-b", "B1", "message-b"));
-  renderer.onSessionUpdate("chat-a", textChunk("session-a", "-A2", "message-a"));
-  renderer.onSessionUpdate("chat-b", textChunk("session-b", "-B2", "message-b"));
+  for (const channelTarget of targets) renderer.onPromptSent(channelTarget);
+  targets.forEach((channelTarget, index) => {
+    renderer.onSessionUpdate(
+      channelTarget,
+      textChunk(`session-${index}`, `${index}-first`, `message-${index}`),
+    );
+  });
+  targets.forEach((channelTarget, index) => {
+    renderer.onSessionUpdate(
+      channelTarget,
+      textChunk(`session-${index}`, "-second", `message-${index}`),
+    );
+  });
 
-  await Promise.all([
-    renderer.onTurnEnd("chat-a"),
-    renderer.onTurnEnd("chat-b"),
-  ]);
+  await Promise.all(targets.map((channelTarget) => renderer.onTurnEnd(channelTarget)));
 
   assert.deepEqual(
-    renderer.sent.sort((left, right) => left.chatId.localeCompare(right.chatId)),
-    [
-      { chatId: "chat-a", kind: "text", content: "A1-A2" },
-      { chatId: "chat-b", kind: "text", content: "B1-B2" },
-    ],
+    renderer.sent
+      .map((entry) => ({
+        key: channelTargetKey(entry.target),
+        kind: entry.kind,
+        content: entry.content,
+      }))
+      .sort((left, right) => left.key.localeCompare(right.key)),
+    targets
+      .map((channelTarget, index) => ({
+        key: channelTargetKey(channelTarget),
+        kind: "text",
+        content: `${index}-first-second`,
+      }))
+      .sort((left, right) => left.key.localeCompare(right.key)),
   );
 });
 
-test("system notifications preserve platform delivery order per chat", async () => {
+test("system notifications are ordered per target and independent across targets", async () => {
   const renderer = new DelayedTextRenderer();
+  const firstTarget = target({ replyTo: "message-a" });
+  const secondTarget = target({ replyTo: "message-b" });
 
-  renderer.onSystemText("chat-a", "first");
-  renderer.onSystemText("chat-a", "second");
-  renderer.onSystemText("chat-b", "other");
+  renderer.onSystemText(firstTarget, "first");
+  renderer.onSystemText(firstTarget, "second");
+  renderer.onSystemText(secondTarget, "other");
 
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.deepEqual(renderer.sent, [
-    "chat-b:other",
-    "chat-a:first",
-    "chat-a:second",
+    `${channelTargetKey(secondTarget)}:other`,
+    `${channelTargetKey(firstTarget)}:first`,
+    `${channelTargetKey(firstTarget)}:second`,
   ]);
 });
 
-test("turn completion rejects and clears a pending permission", async () => {
+test("pending permissions are isolated by route and accept a new reply message", async () => {
   const renderer = new PendingPermissionRenderer();
-  const permission = renderer.requestPermission("chat-a", {
+  const firstTarget = target({ actorId: "bot-a", replyTo: "message-a" });
+  const secondTarget = target({ actorId: "bot-b", replyTo: "message-b" });
+  const request = {
     sessionId: "session-a",
     toolCall: { toolCallId: "tool-a", title: "dangerous tool" },
     options: [
       { kind: "allow_once", optionId: "allow", name: "Allow" },
       { kind: "reject_once", optionId: "reject", name: "Reject" },
     ],
-  });
+  };
+  const firstPermission = renderer.requestPermission(firstTarget, request);
+  const secondPermission = renderer.requestPermission(secondTarget, request);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  await renderer.onTurnEnd("chat-a");
+  assert.equal(
+    renderer.consumePendingText(
+      { ...firstTarget, replyTo: "permission-answer-a" },
+      "1",
+    ),
+    true,
+  );
+  assert.equal(renderer.consumePendingText(firstTarget, "2"), false);
+  assert.equal(renderer.consumePendingText(secondTarget, "2"), true);
 
-  assert.equal(await permission, "reject");
-  assert.equal(renderer.consumePendingText("chat-a", "1"), false);
+  assert.equal(await firstPermission, "allow");
+  assert.equal(await secondPermission, "reject");
+});
+
+test("turn completion clears only its target permission", async () => {
+  const renderer = new PendingPermissionRenderer();
+  const firstTarget = target({ actorId: "bot-a", replyTo: "message-a" });
+  const secondTarget = target({ actorId: "bot-b", replyTo: "message-b" });
+  const request = {
+    sessionId: "session-a",
+    toolCall: { toolCallId: "tool-a", title: "dangerous tool" },
+    options: [
+      { kind: "allow_once", optionId: "allow", name: "Allow" },
+      { kind: "reject_once", optionId: "reject", name: "Reject" },
+    ],
+  };
+  const firstPermission = renderer.requestPermission(firstTarget, request);
+  const secondPermission = renderer.requestPermission(secondTarget, request);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  await renderer.onTurnEnd(firstTarget);
+
+  assert.equal(await firstPermission, "reject");
+  assert.equal(renderer.consumePendingText(firstTarget, "1"), false);
+  assert.equal(renderer.consumePendingText(secondTarget, "1"), true);
+  assert.equal(await secondPermission, "allow");
+});
+
+test("target parser requires a complete route and preserves reply metadata", () => {
+  const complete = target();
+  assert.deepEqual(parseChannelTarget(complete), complete);
+  assert.equal(parseChannelTarget({ chatId: complete.chatId }), undefined);
+  assert.equal(parseChannelTarget({ ...complete, actorId: "" }), undefined);
+  assert.equal(parseChannelTarget({ ...complete, replyTo: "" }), undefined);
 });

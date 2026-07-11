@@ -8,7 +8,7 @@
  * - Constants: flush interval, edit throttle, tool-summary cap, kind icons.
  */
 
-import type { BlockKind } from "../types.js";
+import type { BlockKind, ChannelTarget } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // ACP session-update narrowing
@@ -83,8 +83,8 @@ export type ConsumedSessionUpdate =
 // ---------------------------------------------------------------------------
 
 export interface ManagedBlock<TRef> {
-  /** Channel this block belongs to. Captured at creation time. */
-  chatId: string;
+  /** Per-message target this block belongs to. Captured at creation time. */
+  target: ChannelTarget;
   kind: BlockKind;
   /** ACP message id for text/thought chunks. A change starts a new block. */
   messageId: string | null;

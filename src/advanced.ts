@@ -20,6 +20,11 @@ export {
   sendChannelPrompt,
 } from "./channel-prompt.js";
 export type { SendChannelPromptInput } from "./channel-prompt.js";
+export {
+  channelRouteKey,
+  channelTargetFromInboundContext,
+  channelTargetKey,
+} from "./types.js";
 
 // All types (including internal ones)
 export type {
@@ -32,6 +37,8 @@ export type {
   AddressedBy,
   BlockKind,
   ChannelInboundContext,
+  ChannelRoute,
+  ChannelTarget,
   ConversationScope,
   VerboseConfig,
   BlockRendererOptions,
