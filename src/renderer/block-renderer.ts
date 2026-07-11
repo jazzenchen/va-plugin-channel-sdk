@@ -95,6 +95,11 @@ export abstract class BlockRenderer<TRef = string> {
 
   private states = new Map<string, ChannelState<TRef>>();
 
+  /** Platform API calls must remain ordered per chat even when the ACP
+   *  transport dispatches several notifications without awaiting the prior
+   *  handler. Different chats retain independent delivery lanes. */
+  private deliveryChains = new Map<string, Promise<unknown>>();
+
   /** The chatId of the most recent prompt. Used as fallback target for
    *  notifications that arrive without an explicit chatId. */
   private lastActiveChatId: string | null = null;
@@ -208,7 +213,7 @@ export abstract class BlockRenderer<TRef = string> {
    * Override for platform-specific error rendering (e.g. error card).
    */
   protected async onAfterTurnError(chatId: string, error: string): Promise<void> {
-    await this.sendText(chatId, `❌ Error: ${error}`);
+    await this.enqueueDelivery(chatId, () => this.sendText(chatId, `❌ Error: ${error}`));
   }
 
   // ---------------------------------------------------------------------------
@@ -316,7 +321,7 @@ export abstract class BlockRenderer<TRef = string> {
       dontAsk: "🔒 Don't-ask mode — unknown tools auto-denied",
     };
     const text = badges[modeId] ?? `Mode: ${modeId}`;
-    this.sendText(chatId, text).catch(() => {});
+    this.enqueueDelivery(chatId, () => this.sendText(chatId, text)).catch(() => {});
   }
 
   /**
@@ -362,7 +367,7 @@ export abstract class BlockRenderer<TRef = string> {
 
   /** Handle `va/system_text` from host. */
   onSystemText(chatId: string, text: string): void {
-    this.sendText(chatId, text).catch(() => {});
+    this.enqueueDelivery(chatId, () => this.sendText(chatId, text)).catch(() => {});
   }
 
   /** Handle `va/session_info` from host. */
@@ -373,15 +378,17 @@ export abstract class BlockRenderer<TRef = string> {
       info.start === "new"
         ? `New session started: ${info.sessionId}`
         : `Continuing from session: ${info.sessionId}`;
-    this.sendText(
-      chatId,
-      [
-        "ℹ️ VibeAround session",
-        `Workspace: ${info.workspacePath}`,
-        `Agent: ${info.agent.name}${agentVersion}`,
-        `Profile: ${profile}`,
-        sessionLine,
-      ].join("\n"),
+    this.enqueueDelivery(chatId, () =>
+      this.sendText(
+        chatId,
+        [
+          "ℹ️ VibeAround session",
+          `Workspace: ${info.workspacePath}`,
+          `Agent: ${info.agent.name}${agentVersion}`,
+          `Profile: ${profile}`,
+          sessionLine,
+        ].join("\n"),
+      ),
     ).catch(() => {});
   }
 
@@ -432,7 +439,7 @@ export abstract class BlockRenderer<TRef = string> {
       lines.push("Agent commands will appear after sending your first message.");
     }
 
-    this.sendText(chatId, lines.join("\n")).catch(() => {});
+    this.enqueueDelivery(chatId, () => this.sendText(chatId, lines.join("\n"))).catch(() => {});
   }
 
   // ---------------------------------------------------------------------------
@@ -583,7 +590,7 @@ export abstract class BlockRenderer<TRef = string> {
     const numbered = options.map((opt, i) => `  ${i + 1}. ${opt.name}`);
     const hint = `Reply with a number (1-${options.length}). Any other message cancels and continues.`;
     const prompt = [header, "", ...numbered, "", hint].join("\n");
-    await this.sendText(chatId, prompt);
+    await this.enqueueDelivery(chatId, () => this.sendText(chatId, prompt));
   }
 
   /** Internal: resolve a pending permission, maintaining both lookup tables.
@@ -782,18 +789,34 @@ export abstract class BlockRenderer<TRef = string> {
       if (block.ref === null && !block.creating) {
         // First send — use sentinel to prevent concurrent creates
         block.creating = true;
-        block.ref = await this.sendBlock(block.chatId, block.kind, content);
+        block.ref = await this.enqueueDelivery(block.chatId, () =>
+          this.sendBlock(block.chatId, block.kind, content),
+        );
         block.creating = false;
         state.lastEditMs = Date.now();
       } else if (block.ref !== null && !block.creating && this.streaming && this.editBlock) {
         // Subsequent update — edit in-place (streaming mode only)
-        await this.editBlock(block.chatId, block.ref, block.kind, content, block.sealed);
+        await this.enqueueDelivery(block.chatId, () =>
+          this.editBlock!(block.chatId, block.ref!, block.kind, content, block.sealed),
+        );
         state.lastEditMs = Date.now();
       }
       // else: create is in-flight (creating === true) — skip
     } catch {
       block.creating = false;
     }
+  }
+
+  private enqueueDelivery<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.deliveryChains.get(chatId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(operation);
+    this.deliveryChains.set(chatId, next);
+    void next.finally(() => {
+      if (this.deliveryChains.get(chatId) === next) {
+        this.deliveryChains.delete(chatId);
+      }
+    }).catch(() => {});
+    return next;
   }
 }
 

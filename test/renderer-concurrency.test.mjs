@@ -20,6 +20,21 @@ class RecordingRenderer extends BlockRenderer {
   }
 }
 
+class DelayedTextRenderer extends BlockRenderer {
+  sent = [];
+
+  async sendText(chatId, text) {
+    if (text === "first") {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    this.sent.push(`${chatId}:${text}`);
+  }
+
+  async sendBlock() {
+    return null;
+  }
+}
+
 function textChunk(sessionId, text, messageId) {
   return {
     sessionId,
@@ -53,4 +68,19 @@ test("interleaved async replies keep independent route render state", async () =
       { chatId: "chat-b", kind: "text", content: "B1-B2" },
     ],
   );
+});
+
+test("system notifications preserve platform delivery order per chat", async () => {
+  const renderer = new DelayedTextRenderer();
+
+  renderer.onSystemText("chat-a", "first");
+  renderer.onSystemText("chat-a", "second");
+  renderer.onSystemText("chat-b", "other");
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(renderer.sent, [
+    "chat-b:other",
+    "chat-a:first",
+    "chat-a:second",
+  ]);
 });
