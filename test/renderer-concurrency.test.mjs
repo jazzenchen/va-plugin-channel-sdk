@@ -35,6 +35,12 @@ class DelayedTextRenderer extends BlockRenderer {
   }
 }
 
+class PendingPermissionRenderer extends BlockRenderer {
+  async sendText() {}
+  async sendBlock() { return null; }
+  async onRequestPermission() {}
+}
+
 function textChunk(sessionId, text, messageId) {
   return {
     sessionId,
@@ -83,4 +89,22 @@ test("system notifications preserve platform delivery order per chat", async () 
     "chat-a:first",
     "chat-a:second",
   ]);
+});
+
+test("turn completion rejects and clears a pending permission", async () => {
+  const renderer = new PendingPermissionRenderer();
+  const permission = renderer.requestPermission("chat-a", {
+    sessionId: "session-a",
+    toolCall: { toolCallId: "tool-a", title: "dangerous tool" },
+    options: [
+      { kind: "allow_once", optionId: "allow", name: "Allow" },
+      { kind: "reject_once", optionId: "reject", name: "Reject" },
+    ],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  await renderer.onTurnEnd("chat-a");
+
+  assert.equal(await permission, "reject");
+  assert.equal(renderer.consumePendingText("chat-a", "1"), false);
 });

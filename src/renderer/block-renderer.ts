@@ -329,6 +329,7 @@ export abstract class BlockRenderer<TRef = string> {
    * leftover state from a previous turn.
    */
   onPromptSent(chatId: string): void {
+    this.clearPendingPermission(chatId);
     this.lastActiveChatId = chatId;
     const old = this.states.get(chatId);
     if (old?.flushTimer) clearTimeout(old.flushTimer);
@@ -482,7 +483,7 @@ export abstract class BlockRenderer<TRef = string> {
     // per-session, but keep the invariant explicit).
     const prior = this.pendingByChat.get(chatId);
     if (prior) {
-      this.resolvePermissionInternal(prior, null);
+      this.clearPendingPermission(chatId);
     }
 
     const options: ReadonlyArray<{ kind: string; optionId: string; name: string }> =
@@ -593,11 +594,7 @@ export abstract class BlockRenderer<TRef = string> {
     await this.enqueueDelivery(chatId, () => this.sendText(chatId, prompt));
   }
 
-  /** Internal: resolve a pending permission, maintaining both lookup tables.
-   *  Pass `null` for optionId to treat the resolution as "cancelled" — in
-   *  that case the resolver is not called, the agent-side Promise stays
-   *  pending (caller should only use null when replacing with a new pending
-   *  on the same chat, which shouldn't happen in practice). */
+  /** Internal: resolve a pending permission, maintaining both lookup tables. */
   private resolvePermissionInternal(
     callbackId: string,
     optionId: string | null,
@@ -608,10 +605,25 @@ export abstract class BlockRenderer<TRef = string> {
     if (this.pendingByChat.get(entry.chatId) === callbackId) {
       this.pendingByChat.delete(entry.chatId);
     }
-    if (optionId !== null) {
-      entry.resolve(optionId);
-    }
+    if (optionId !== null) entry.resolve(optionId);
+    else entry.reject(new Error("permission request cancelled"));
     return true;
+  }
+
+  private clearPendingPermission(chatId: string): void {
+    const callbackId = this.pendingByChat.get(chatId);
+    if (!callbackId) return;
+    const entry = this.pendingPermissions.get(callbackId);
+    this.pendingByChat.delete(chatId);
+    if (!entry) return;
+    this.pendingPermissions.delete(callbackId);
+
+    const fallback =
+      entry.options.find((option) => option.kind === "reject_once")?.optionId ??
+      entry.options.find((option) => option.kind === "reject_always")?.optionId ??
+      entry.options[0]?.optionId;
+    if (fallback) entry.resolve(fallback);
+    else entry.reject(new Error("permission request cancelled because the turn ended"));
   }
 
   /**
@@ -621,6 +633,7 @@ export abstract class BlockRenderer<TRef = string> {
    * to complete before calling `onAfterTurnEnd`.
    */
   async onTurnEnd(chatId: string): Promise<void> {
+    this.clearPendingPermission(chatId);
     const state = this.states.get(chatId);
     if (!state) return;
 
@@ -646,6 +659,7 @@ export abstract class BlockRenderer<TRef = string> {
    * Discards pending state and calls `onAfterTurnError`.
    */
   async onTurnError(chatId: string, error: string): Promise<void> {
+    this.clearPendingPermission(chatId);
     const state = this.states.get(chatId);
     if (state?.flushTimer) clearTimeout(state.flushTimer);
     this.states.delete(chatId);
