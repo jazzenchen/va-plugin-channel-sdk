@@ -56,6 +56,92 @@ export interface CommandEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound conversation routing
+// ---------------------------------------------------------------------------
+
+/** Whether an inbound message comes from a direct message or group chat. */
+export type ConversationScope = "dm" | "group";
+
+/** How an inbound message explicitly addressed the channel actor. */
+export type AddressedBy =
+  | "dm"
+  | "mention"
+  | "command"
+  | "callback"
+  | "unaddressed";
+
+/** Platform-neutral routing metadata attached to an inbound channel prompt. */
+export interface ChannelInboundContext {
+  /** Configured channel/Bot instance that received the message. */
+  channelInstanceId: string;
+  /** Logical VibeAround actor addressed within that channel instance. */
+  actorId: string;
+  chatId: string;
+  topicId?: string;
+  senderId?: string;
+  platformMessageId?: string;
+  scope: ConversationScope;
+  addressedBy: AddressedBy;
+}
+
+/** Stable channel route carried by every host-to-plugin notification. */
+export interface ChannelRoute {
+  /** Configured channel/Bot instance that owns the route. */
+  channelInstanceId: string;
+  /** Logical actor addressed within that channel instance. */
+  actorId: string;
+  /** Platform conversation identifier. */
+  chatId: string;
+  /** Platform topic/thread identifier, when the platform exposes one. */
+  topicId?: string;
+}
+
+/** Per-message delivery target. `replyTo` must not be persisted as route identity. */
+export interface ChannelTarget extends ChannelRoute {
+  /** Platform message identifier that this output should reply to. */
+  replyTo?: string;
+}
+
+/** Stable route key for cross-message state such as a pending text permission. */
+export function channelRouteKey(route: ChannelRoute): string {
+  return JSON.stringify([
+    route.channelInstanceId,
+    route.actorId,
+    route.chatId,
+    route.topicId ?? null,
+  ]);
+}
+
+/**
+ * Complete in-memory renderer/delivery key for one channel target.
+ *
+ * `replyTo` is intentionally included so concurrently active turns in the
+ * same route cannot share streaming blocks or permission state.
+ */
+export function channelTargetKey(target: ChannelTarget): string {
+  return JSON.stringify([
+    target.channelInstanceId,
+    target.actorId,
+    target.chatId,
+    target.topicId ?? null,
+    target.replyTo ?? null,
+  ]);
+}
+
+/** Convert one accepted inbound message into its matching output target. */
+export function channelTargetFromInboundContext(
+  context: ChannelInboundContext,
+): ChannelTarget {
+  return {
+    channelInstanceId: context.channelInstanceId,
+    actorId: context.actorId,
+    chatId: context.chatId,
+    topicId: context.topicId,
+    replyTo: context.platformMessageId,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Session info
 // ---------------------------------------------------------------------------
 
@@ -127,4 +213,10 @@ export interface PluginInitMeta {
   config: Record<string, unknown>;
   /** Host-provided cache directory path for temporary files. */
   cacheDir?: string;
+  /** Channel kind registered by the host (for example, `feishu`). */
+  channelKind?: string;
+  /** Stable identity of this configured channel/Bot instance. */
+  channelInstanceId?: string;
+  /** Stable identity of the logical actor represented by this plugin. */
+  actorId?: string;
 }

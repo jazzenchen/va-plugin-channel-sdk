@@ -40,14 +40,58 @@ runChannelPlugin({
   name: "vibearound-myplatform",
   version: "0.1.0",
   requiredConfig: ["bot_token"],
-  createBot: ({ config, agent, log, cacheDir }) =>
-    new MyBot(config.bot_token as string, agent, log, cacheDir),
+  createBot: ({
+    config,
+    agent,
+    log,
+    cacheDir,
+    channelInstanceId,
+    actorId,
+  }) => new MyBot(
+    config.bot_token as string,
+    agent,
+    log,
+    cacheDir,
+    channelInstanceId,
+    actorId,
+  ),
   createRenderer: (bot, log, verbose) =>
     new MyRenderer(bot, log, verbose),
 });
 ```
 
 That's it. The SDK handles ACP connection, config validation, event routing, and shutdown.
+
+`createBot` always receives stable `channelInstanceId` and `actorId` values.
+Older hosts remain compatible: the SDK falls back from `channelInstanceId` to
+`channelKind`, then to the plugin name; `actorId` falls back to the resolved
+channel instance ID.
+
+## Inbound channel prompts
+
+Use `sendChannelPrompt` to attach platform-neutral routing metadata and apply
+the default addressing policy before sending a prompt to the host:
+
+```ts
+import { sendChannelPrompt } from "@vibearound/plugin-channel-sdk";
+
+await sendChannelPrompt(agent, {
+  context: {
+    channelInstanceId: "feishu-primary",
+    actorId: "codex-reviewer",
+    chatId,
+    scope: isDirectMessage ? "dm" : "group",
+    addressedBy: isDirectMessage ? "dm" : "mention",
+  },
+  prompt: [{ type: "text", text }],
+});
+```
+
+Direct messages are accepted without an explicit mention. Group messages are
+accepted only when addressed by mention or callback; otherwise the
+helper returns `null` without calling ACP. Plugins remain responsible for
+translating their platform's DM, mention, and callback semantics into
+`ChannelInboundContext`.
 
 ## BlockRenderer
 
