@@ -7,7 +7,12 @@ import type {
   ContentBlock,
   PromptResponse,
 } from "@agentclientprotocol/sdk";
-import type { ChannelInboundContext } from "./types.js";
+import {
+  channelTargetFromInboundContext,
+  channelTargetKey,
+  type ChannelInboundContext,
+  type ChannelTarget,
+} from "./types.js";
 
 export interface SendChannelPromptInput {
   context: ChannelInboundContext;
@@ -16,6 +21,90 @@ export interface SendChannelPromptInput {
 
 export interface CancelChannelPromptInput {
   context: ChannelInboundContext;
+}
+
+/** @internal Host prompt-completion signal used by runChannelPlugin. */
+export interface PromptCompletionController {
+  complete(target: ChannelTarget): void;
+  close(): void;
+}
+
+interface CompletionWaiter {
+  promise: Promise<void>;
+  resolve(): void;
+  reject(error: Error): void;
+}
+
+interface PendingCompletion {
+  promise: Promise<void>;
+  cancel(): void;
+}
+
+type CompletionQueues = Map<string, CompletionWaiter[]>;
+
+const completionQueues = new WeakMap<Agent, CompletionQueues>();
+
+function waitForPromptCompletion(
+  agent: Agent,
+  target: ChannelTarget,
+): PendingCompletion | undefined {
+  const pending = completionQueues.get(agent);
+  if (!pending) return undefined;
+
+  const key = channelTargetKey(target);
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const waiter: CompletionWaiter = {
+    promise: new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    }),
+    resolve: () => resolve(),
+    reject: (error) => reject(error),
+  };
+  const queue = pending.get(key) ?? [];
+  queue.push(waiter);
+  pending.set(key, queue);
+
+  return {
+    promise: waiter.promise,
+    cancel: () => {
+      const current = pending.get(key);
+      if (!current) return;
+      const index = current.indexOf(waiter);
+      if (index >= 0) current.splice(index, 1);
+      if (current.length === 0) pending.delete(key);
+    },
+  };
+}
+
+/** @internal Enable the host completion boundary for one ACP connection. */
+export function enablePromptCompletion(
+  agent: Agent,
+): PromptCompletionController {
+  const pending: CompletionQueues = new Map();
+  completionQueues.set(agent, pending);
+  return {
+    complete: (target) => {
+      const key = channelTargetKey(target);
+      const queue = pending.get(key);
+      if (!queue) return;
+      const waiter = queue.shift();
+      if (!waiter) return;
+      if (queue.length === 0) pending.delete(key);
+      waiter.resolve();
+    },
+    close: () => {
+      if (completionQueues.get(agent) === pending) {
+        completionQueues.delete(agent);
+      }
+      const error = new Error("host connection closed before prompt completion");
+      for (const queue of pending.values()) {
+        for (const waiter of queue) waiter.reject(error);
+      }
+      pending.clear();
+    },
+  };
 }
 
 /**
@@ -48,13 +137,25 @@ export async function sendChannelPrompt(
 ): Promise<PromptResponse | null> {
   if (!isChannelPromptAllowed(input.context)) return null;
 
-  return agent.prompt({
-    sessionId: input.context.chatId,
-    prompt: input.prompt,
-    _meta: {
-      "va.channel": input.context,
-    },
-  });
+  const completion = waitForPromptCompletion(
+    agent,
+    channelTargetFromInboundContext(input.context),
+  );
+  try {
+    const prompt = agent.prompt({
+      sessionId: input.context.chatId,
+      prompt: input.prompt,
+      _meta: {
+        "va.channel": input.context,
+      },
+    });
+    if (!completion) return await prompt;
+    const [response] = await Promise.all([prompt, completion.promise]);
+    return response;
+  } catch (error) {
+    completion?.cancel();
+    throw error;
+  }
 }
 
 /** Recognize the channel-safe text aliases for interrupting an active turn. */
