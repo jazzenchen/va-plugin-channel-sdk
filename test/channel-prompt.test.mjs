@@ -9,7 +9,6 @@ import {
   sendChannelPrompt,
 } from "../dist/index.js";
 import { parsePluginInitMeta } from "../dist/connection.js";
-import { enablePromptCompletion } from "../dist/channel-prompt.js";
 import {
   resolveChannelIdentity,
   waitForDisconnectOrStartFailure,
@@ -83,62 +82,6 @@ test("sendChannelPrompt carries the route in ACP metadata", async () => {
   ]);
 });
 
-test("sendChannelPrompt waits for the advertised host completion boundary", async () => {
-  const response = { stopReason: "end_turn" };
-  const agent = {
-    async prompt() {
-      return response;
-    },
-  };
-  const completion = enablePromptCompletion(agent);
-  let settled = false;
-
-  const result = sendChannelPrompt(agent, {
-    context: { ...baseContext, platformMessageId: "message-1" },
-    prompt: [{ type: "text", text: "va status" }],
-  });
-  void result.then(() => {
-    settled = true;
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.equal(settled, false);
-  completion.complete(
-    channelTargetFromInboundContext({
-      ...baseContext,
-      chatId: "other-chat",
-      platformMessageId: "message-1",
-    }),
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(settled, false);
-  completion.complete(
-    channelTargetFromInboundContext({
-      ...baseContext,
-      platformMessageId: "message-1",
-    }),
-  );
-  assert.equal(await result, response);
-  completion.close();
-});
-
-test("host disconnect releases a pending completion wait with an error", async () => {
-  const agent = {
-    async prompt() {
-      return { stopReason: "end_turn" };
-    },
-  };
-  const completion = enablePromptCompletion(agent);
-  const result = sendChannelPrompt(agent, {
-    context: { ...baseContext, platformMessageId: "message-2" },
-    prompt: [{ type: "text", text: "hello" }],
-  });
-
-  completion.close();
-
-  await assert.rejects(result, /host connection closed before prompt completion/);
-});
-
 test("inbound platform message identity becomes the output reply target", () => {
   assert.deepEqual(
     channelTargetFromInboundContext({
@@ -203,6 +146,7 @@ test("initialize metadata exposes channel routing identities", () => {
   assert.deepEqual(
     parsePluginInitMeta({
       config: { token: "secret" },
+      // Legacy metadata is accepted but no longer creates SDK completion state.
       promptDone: true,
       cacheDir: "/tmp/channel-cache",
       channelKind: "feishu",
@@ -211,14 +155,12 @@ test("initialize metadata exposes channel routing identities", () => {
     }),
     {
       config: { token: "secret" },
-      promptDone: true,
       cacheDir: "/tmp/channel-cache",
       channelKind: "feishu",
       channelInstanceId: "feishu-primary",
       actorId: "codex-reviewer",
     },
   );
-  assert.equal(parsePluginInitMeta({ promptDone: "true" }).promptDone, false);
 });
 
 test("channel identity uses stable compatibility fallbacks", () => {
