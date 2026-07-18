@@ -620,7 +620,10 @@ export abstract class BlockRenderer<TRef = string> {
     const targetKey = channelTargetKey(target);
     this.clearPendingPermission(target);
     const state = this.states.get(targetKey);
-    if (!state) return;
+    if (!state) {
+      await this.deliveryChains.get(targetKey)?.catch(() => {});
+      return;
+    }
 
     if (state.flushTimer) {
       clearTimeout(state.flushTimer);
@@ -634,6 +637,7 @@ export abstract class BlockRenderer<TRef = string> {
     }
 
     await state.sendChain;
+    await this.deliveryChains.get(targetKey)?.catch(() => {});
     this.states.delete(targetKey);
     await this.onAfterTurnEnd(target);
   }
