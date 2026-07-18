@@ -101,6 +101,9 @@ export abstract class BlockRenderer<TRef = string> {
    *  transport dispatches several notifications without awaiting the prior
    *  handler. Different targets retain independent delivery lanes. */
   private deliveryChains = new Map<string, Promise<unknown>>();
+  /** Failures from fire-and-forget deliveries such as system text. Block
+   *  deliveries keep their own recoverable error state. */
+  private deliveryErrors = new Map<string, unknown>();
 
   /**
    * Pending permission requests, keyed by callback id. Resolvers are invoked
@@ -284,7 +287,9 @@ export abstract class BlockRenderer<TRef = string> {
         break;
       }
       case "current_mode_update": {
-        Promise.resolve(this.onCurrentModeUpdate(target, update.currentModeId)).catch(() => {});
+        Promise.resolve(this.onCurrentModeUpdate(target, update.currentModeId)).catch((error) => {
+          this.recordDeliveryError(target, error);
+        });
         break;
       }
     }
@@ -307,7 +312,7 @@ export abstract class BlockRenderer<TRef = string> {
       dontAsk: "🔒 Don't-ask mode — unknown tools auto-denied",
     };
     const text = badges[modeId] ?? `Mode: ${modeId}`;
-    this.enqueueDelivery(target, () => this.sendText(target, text)).catch(() => {});
+    this.enqueueUnobservedDelivery(target, () => this.sendText(target, text));
   }
 
   /**
@@ -317,6 +322,7 @@ export abstract class BlockRenderer<TRef = string> {
   onPromptSent(target: ChannelTarget): void {
     const targetKey = channelTargetKey(target);
     this.clearPendingPermission(target);
+    this.deliveryErrors.delete(targetKey);
     const old = this.states.get(targetKey);
     if (old?.flushTimer) clearTimeout(old.flushTimer);
     this.states.set(targetKey, {
@@ -355,7 +361,7 @@ export abstract class BlockRenderer<TRef = string> {
 
   /** Handle `va/system_text` from host. */
   onSystemText(target: ChannelTarget, text: string): void {
-    this.enqueueDelivery(target, () => this.sendText(target, text)).catch(() => {});
+    this.enqueueUnobservedDelivery(target, () => this.sendText(target, text));
   }
 
   /** Handle `va/session_info` from host. */
@@ -366,7 +372,7 @@ export abstract class BlockRenderer<TRef = string> {
       info.start === "new"
         ? `New session started: ${info.sessionId}`
         : `Continuing from session: ${info.sessionId}`;
-    this.enqueueDelivery(target, () =>
+    this.enqueueUnobservedDelivery(target, () =>
       this.sendText(
         target,
         [
@@ -377,7 +383,7 @@ export abstract class BlockRenderer<TRef = string> {
           sessionLine,
         ].join("\n"),
       ),
-    ).catch(() => {});
+    );
   }
 
   /** @deprecated `va/session_info` carries the visible startup card. */
@@ -427,7 +433,7 @@ export abstract class BlockRenderer<TRef = string> {
       lines.push("Agent commands will appear after sending your first message.");
     }
 
-    this.enqueueDelivery(target, () => this.sendText(target, lines.join("\n"))).catch(() => {});
+    this.enqueueUnobservedDelivery(target, () => this.sendText(target, lines.join("\n")));
   }
 
   // ---------------------------------------------------------------------------
@@ -614,14 +620,20 @@ export abstract class BlockRenderer<TRef = string> {
    * Call this after `agent.prompt()` resolves (turn complete).
    *
    * Seals and flushes the last block, then waits for all pending sends/edits
-   * to complete before calling `onAfterTurnEnd`.
+   * to complete before calling `onAfterTurnEnd`. Rejects after state cleanup
+   * when any delivery remains failed.
    */
   async onTurnEnd(target: ChannelTarget): Promise<void> {
     const targetKey = channelTargetKey(target);
     this.clearPendingPermission(target);
     const state = this.states.get(targetKey);
     if (!state) {
-      await this.deliveryChains.get(targetKey)?.catch(() => {});
+      await this.drainDeliveries(targetKey);
+      if (this.deliveryErrors.has(targetKey)) {
+        const error = this.deliveryErrors.get(targetKey);
+        this.deliveryErrors.delete(targetKey);
+        throw error;
+      }
       return;
     }
 
@@ -637,8 +649,14 @@ export abstract class BlockRenderer<TRef = string> {
     }
 
     await state.sendChain;
-    await this.deliveryChains.get(targetKey)?.catch(() => {});
+    await this.drainDeliveries(targetKey);
+    const failedBlock = state.blocks.find((block) => block.deliveryError !== null);
+    const hasDeliveryError = this.deliveryErrors.has(targetKey);
+    const deliveryError = this.deliveryErrors.get(targetKey);
     this.states.delete(targetKey);
+    this.deliveryErrors.delete(targetKey);
+    if (failedBlock) throw failedBlock.deliveryError;
+    if (hasDeliveryError) throw deliveryError;
     await this.onAfterTurnEnd(target);
   }
 
@@ -653,6 +671,7 @@ export abstract class BlockRenderer<TRef = string> {
     const state = this.states.get(targetKey);
     if (state?.flushTimer) clearTimeout(state.flushTimer);
     this.states.delete(targetKey);
+    this.deliveryErrors.delete(targetKey);
     await this.onAfterTurnError(target, error);
   }
 
@@ -704,6 +723,7 @@ export abstract class BlockRenderer<TRef = string> {
         ref: null,
         creating: false,
         sealed: false,
+        deliveryError: null,
       });
     }
 
@@ -782,13 +802,17 @@ export abstract class BlockRenderer<TRef = string> {
   private enqueueFlush(state: ChannelState<TRef>, block: ManagedBlock<TRef>): void {
     state.sendChain = state.sendChain
       .then(() => this.flushBlock(state, block))
-      .catch(() => {}); // errors are handled inside flushBlock
+      .catch((error) => {
+        block.creating = false;
+        block.deliveryError = error;
+      });
   }
 
   private async flushBlock(state: ChannelState<TRef>, block: ManagedBlock<TRef>): Promise<void> {
     const content = this.formatContent(block.kind, block.content, block.sealed);
     if (!content) return;
 
+    let delivered = false;
     try {
       if (block.ref === null && !block.creating) {
         // First send — use sentinel to prevent concurrent creates
@@ -798,16 +822,46 @@ export abstract class BlockRenderer<TRef = string> {
         );
         block.creating = false;
         state.lastEditMs = Date.now();
+        delivered = true;
       } else if (block.ref !== null && !block.creating && this.streaming && this.editBlock) {
         // Subsequent update — edit in-place (streaming mode only)
         await this.enqueueDelivery(block.target, () =>
           this.editBlock!(block.target, block.ref!, block.kind, content, block.sealed),
         );
         state.lastEditMs = Date.now();
+        delivered = true;
       }
       // else: create is in-flight (creating === true) — skip
-    } catch {
+    } catch (error) {
       block.creating = false;
+      block.deliveryError = error;
+    }
+    if (delivered) block.deliveryError = null;
+  }
+
+  private enqueueUnobservedDelivery<T>(
+    target: ChannelTarget,
+    operation: () => Promise<T>,
+  ): void {
+    void this.enqueueDelivery(target, operation).catch((error) => {
+      this.recordDeliveryError(target, error);
+    });
+  }
+
+  private recordDeliveryError(target: ChannelTarget, error: unknown): void {
+    const targetKey = channelTargetKey(target);
+    if (!this.deliveryErrors.has(targetKey)) {
+      this.deliveryErrors.set(targetKey, error);
+    }
+  }
+
+  private async drainDeliveries(targetKey: string): Promise<void> {
+    try {
+      await this.deliveryChains.get(targetKey);
+    } catch (error) {
+      if (!this.deliveryErrors.has(targetKey)) {
+        this.deliveryErrors.set(targetKey, error);
+      }
     }
   }
 
