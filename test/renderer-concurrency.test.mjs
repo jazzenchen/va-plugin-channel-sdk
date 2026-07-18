@@ -47,6 +47,53 @@ class DelayedTextRenderer extends BlockRenderer {
   }
 }
 
+class FailingTextRenderer extends BlockRenderer {
+  async sendText() {
+    throw new Error("system text delivery failed");
+  }
+
+  async sendBlock() {
+    return null;
+  }
+}
+
+class ScriptedDeliveryRenderer extends BlockRenderer {
+  attempts = [];
+  completed = [];
+
+  constructor(outcomesByTarget, options = {}) {
+    super({
+      streaming: false,
+      flushIntervalMs: 0,
+      minEditIntervalMs: 0,
+      ...options,
+    });
+    this.outcomesByTarget = outcomesByTarget;
+  }
+
+  async sendText() {}
+
+  async sendBlock(channelTarget, kind, content) {
+    return this.deliver(channelTarget, kind, content);
+  }
+
+  async editBlock(channelTarget, _ref, kind, content) {
+    await this.deliver(channelTarget, kind, content);
+  }
+
+  async onAfterTurnEnd(channelTarget) {
+    this.completed.push(channelTargetKey(channelTarget));
+  }
+
+  deliver(channelTarget, kind, content) {
+    const key = channelTargetKey(channelTarget);
+    this.attempts.push({ key, kind, content });
+    const outcome = this.outcomesByTarget.get(key)?.shift();
+    if (outcome instanceof Error) throw outcome;
+    return `${key}-${this.attempts.length}`;
+  }
+}
+
 class PendingPermissionRenderer extends BlockRenderer {
   async sendText() {}
   async sendBlock() { return null; }
@@ -135,6 +182,98 @@ test("turn completion waits for queued system notification delivery", async () =
   assert.deepEqual(renderer.sent, [
     `${channelTargetKey(channelTarget)}:first`,
   ]);
+});
+
+test("turn completion exposes queued system notification failures", async () => {
+  const renderer = new FailingTextRenderer();
+  const channelTarget = target();
+
+  renderer.onPromptSent(channelTarget);
+  renderer.onSystemText(channelTarget, "notice");
+
+  await assert.rejects(renderer.onTurnEnd(channelTarget), /system text delivery failed/);
+});
+
+test("final block delivery failure rejects the turn and skips after-turn hooks", async () => {
+  const channelTarget = target();
+  const key = channelTargetKey(channelTarget);
+  const renderer = new ScriptedDeliveryRenderer(new Map([
+    [key, [new Error("final delivery failed"), "next turn succeeds"]],
+  ]));
+
+  renderer.onPromptSent(channelTarget);
+  renderer.onSessionUpdate(channelTarget, textChunk("session-1", "first", "message-1"));
+
+  await assert.rejects(renderer.onTurnEnd(channelTarget), /final delivery failed/);
+  assert.deepEqual(renderer.completed, []);
+
+  renderer.onPromptSent(channelTarget);
+  renderer.onSessionUpdate(channelTarget, textChunk("session-2", "second", "message-2"));
+  await renderer.onTurnEnd(channelTarget);
+  assert.deepEqual(renderer.completed, [key]);
+});
+
+test("a later successful flush recovers an intermediate streaming failure", async () => {
+  const channelTarget = target();
+  const key = channelTargetKey(channelTarget);
+  const renderer = new ScriptedDeliveryRenderer(
+    new Map([[key, [new Error("intermediate delivery failed"), "final succeeds"]]]),
+    { streaming: true },
+  );
+
+  renderer.onPromptSent(channelTarget);
+  renderer.onSessionUpdate(channelTarget, textChunk("session-1", "partial", "message-1"));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(renderer.attempts.length, 1);
+
+  renderer.onSessionUpdate(channelTarget, textChunk("session-1", " response", "message-1"));
+  await renderer.onTurnEnd(channelTarget);
+
+  assert.equal(renderer.attempts.length, 2);
+  assert.equal(renderer.attempts[1].content, "partial response");
+  assert.deepEqual(renderer.completed, [key]);
+});
+
+test("a failed sealed block is not masked by a later successful block", async () => {
+  const channelTarget = target();
+  const key = channelTargetKey(channelTarget);
+  const renderer = new ScriptedDeliveryRenderer(new Map([
+    [key, [new Error("first sealed block failed"), "second block succeeds"]],
+  ]));
+
+  renderer.onPromptSent(channelTarget);
+  renderer.onSessionUpdate(channelTarget, textChunk("session-1", "first", "message-1"));
+  renderer.onSessionUpdate(channelTarget, textChunk("session-1", "second", "message-2"));
+
+  await assert.rejects(renderer.onTurnEnd(channelTarget), /first sealed block failed/);
+  assert.equal(renderer.attempts.length, 2);
+  assert.deepEqual(renderer.completed, []);
+});
+
+test("delivery failures remain isolated to their target", async () => {
+  const failingTarget = target({ replyTo: "message-failing" });
+  const healthyTarget = target({ replyTo: "message-healthy" });
+  const failingKey = channelTargetKey(failingTarget);
+  const healthyKey = channelTargetKey(healthyTarget);
+  const renderer = new ScriptedDeliveryRenderer(new Map([
+    [failingKey, [new Error("target delivery failed")]],
+    [healthyKey, ["target delivery succeeds"]],
+  ]));
+
+  renderer.onPromptSent(failingTarget);
+  renderer.onPromptSent(healthyTarget);
+  renderer.onSessionUpdate(failingTarget, textChunk("session-failing", "bad", "message-1"));
+  renderer.onSessionUpdate(healthyTarget, textChunk("session-healthy", "good", "message-1"));
+
+  const [failed, succeeded] = await Promise.allSettled([
+    renderer.onTurnEnd(failingTarget),
+    renderer.onTurnEnd(healthyTarget),
+  ]);
+
+  assert.equal(failed.status, "rejected");
+  assert.match(String(failed.reason), /target delivery failed/);
+  assert.equal(succeeded.status, "fulfilled");
+  assert.deepEqual(renderer.completed, [healthyKey]);
 });
 
 test("pending permissions are isolated by route and accept a new reply message", async () => {

@@ -109,7 +109,6 @@ export function parsePluginInitMeta(
 ): PluginInitMeta {
   return {
     config: (rawMeta?.config ?? {}) as Record<string, unknown>,
-    promptDone: rawMeta?.promptDone === true,
     cacheDir: stringValue(rawMeta?.cacheDir),
     channelKind: nonEmptyString(rawMeta?.channelKind),
     channelInstanceId: nonEmptyString(rawMeta?.channelInstanceId),

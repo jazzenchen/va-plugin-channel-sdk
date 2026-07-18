@@ -95,6 +95,9 @@ export interface ManagedBlock<TRef> {
   creating: boolean;
   /** True once the block will receive no more content. */
   sealed: boolean;
+  /** Last delivery failure for this block. Cleared by a later successful
+   *  send/edit of the same block. */
+  deliveryError: unknown | null;
 }
 
 export interface CachedToolCall {
