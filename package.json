@@ -1,6 +1,6 @@
 {
   "name": "@vibearound/plugin-channel-sdk",
-  "version": "0.6.3",
+  "version": "0.6.6",
   "description": "VibeAround Plugin SDK — base classes and utilities for building channel plugins",
   "license": "MIT",
   "type": "module",
