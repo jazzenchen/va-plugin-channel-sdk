@@ -93,10 +93,7 @@ export async function connectToHost(
     | Record<string, unknown>
     | undefined;
 
-  const meta: PluginInitMeta = {
-    config: (rawMeta?.config ?? {}) as Record<string, unknown>,
-    cacheDir: rawMeta?.cacheDir as string | undefined,
-  };
+  const meta = parsePluginInitMeta(rawMeta);
 
   const agentInfo: AgentInfo = {
     name: initResponse.agentInfo?.name,
@@ -104,6 +101,27 @@ export async function connectToHost(
   };
 
   return { agent: capturedAgent, meta, agentInfo, conn };
+}
+
+/** @internal Exported for contract tests; not part of the package entry point. */
+export function parsePluginInitMeta(
+  rawMeta: Record<string, unknown> | undefined,
+): PluginInitMeta {
+  return {
+    config: (rawMeta?.config ?? {}) as Record<string, unknown>,
+    cacheDir: stringValue(rawMeta?.cacheDir),
+    channelKind: nonEmptyString(rawMeta?.channelKind),
+    channelInstanceId: nonEmptyString(rawMeta?.channelInstanceId),
+    actorId: nonEmptyString(rawMeta?.actorId),
+  };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 // ---------------------------------------------------------------------------

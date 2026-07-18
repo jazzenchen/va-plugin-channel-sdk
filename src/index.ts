@@ -14,8 +14,8 @@
  * } from "@vibearound/plugin-channel-sdk";
  *
  * class MyRenderer extends BlockRenderer<string> {
- *   protected async sendText(chatId: string, text: string) { ... }
- *   protected async sendBlock(chatId: string, kind: BlockKind, content: string) { ... }
+ *   protected async sendText(target: ChannelTarget, text: string) { ... }
+ *   protected async sendBlock(target: ChannelTarget, kind: BlockKind, content: string) { ... }
  * }
  *
  * runChannelPlugin({
@@ -47,6 +47,18 @@ export { runChannelPlugin } from "./plugin.js";
 // Base class for stream rendering
 export { BlockRenderer } from "./renderer.js";
 
+// Inbound prompt routing
+export {
+  cancelChannelPrompt,
+  isChannelStopCommand,
+  isChannelPromptAllowed,
+  sendChannelPrompt,
+} from "./channel-prompt.js";
+export type {
+  CancelChannelPromptInput,
+  SendChannelPromptInput,
+} from "./channel-prompt.js";
+
 // Interfaces the plugin implements
 export type {
   ChannelBot,
@@ -58,10 +70,22 @@ export type {
 
 // Types used in BlockRenderer overrides
 export type {
+  AddressedBy,
   BlockKind,
+  ChannelInboundContext,
+  ChannelRoute,
+  ChannelTarget,
+  ChannelSessionInfo,
   CommandEntry,
+  ConversationScope,
   VerboseConfig,
   BlockRendererOptions,
+} from "./types.js";
+
+export {
+  channelRouteKey,
+  channelTargetFromInboundContext,
+  channelTargetKey,
 } from "./types.js";
 
 // ACP types the plugin needs for prompt content and permission overrides

@@ -14,6 +14,18 @@
 export { connectToHost, stripExtPrefix, redirectConsoleToStderr } from "./connection.js";
 export type { PluginInfo, ConnectResult, AgentInfo } from "./connection.js";
 
+// Inbound prompt routing
+export {
+  isChannelPromptAllowed,
+  sendChannelPrompt,
+} from "./channel-prompt.js";
+export type { SendChannelPromptInput } from "./channel-prompt.js";
+export {
+  channelRouteKey,
+  channelTargetFromInboundContext,
+  channelTargetKey,
+} from "./types.js";
+
 // All types (including internal ones)
 export type {
   Agent,
@@ -22,7 +34,12 @@ export type {
   SessionNotification,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  AddressedBy,
   BlockKind,
+  ChannelInboundContext,
+  ChannelRoute,
+  ChannelTarget,
+  ConversationScope,
   VerboseConfig,
   BlockRendererOptions,
   PluginCapabilities,
