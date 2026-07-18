@@ -211,6 +211,8 @@ export interface BlockRendererOptions {
 export interface PluginInitMeta {
   /** Plugin-specific config object from settings.json. */
   config: Record<string, unknown>;
+  /** Whether the host emits an ordered `va/prompt_done` notification. */
+  promptDone?: boolean;
   /** Host-provided cache directory path for temporary files. */
   cacheDir?: string;
   /** Channel kind registered by the host (for example, `feishu`). */

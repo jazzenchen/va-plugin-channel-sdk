@@ -27,6 +27,10 @@ import path from "node:path";
 import type { Agent } from "@agentclientprotocol/sdk";
 
 import { connectToHost, stripExtPrefix } from "./connection.js";
+import {
+  enablePromptCompletion,
+  type PromptCompletionController,
+} from "./channel-prompt.js";
 import { extractErrorMessage } from "./errors.js";
 import { BlockRenderer } from "./renderer.js";
 import type {
@@ -162,6 +166,7 @@ async function runInner<
   log("info", "initializing ACP connection...");
 
   let renderer: TRenderer | null = null;
+  let promptCompletion: PromptCompletionController | undefined;
 
   const { agent, meta, agentInfo, conn } = await connectToHost(
     { name: spec.name, version: spec.version },
@@ -281,12 +286,28 @@ async function runInner<
             }
             break;
           }
+          case "va/prompt_done": {
+            if (target) {
+              promptCompletion?.complete(target);
+            } else {
+              log("warn", "invalid va/prompt_done notification");
+            }
+            break;
+          }
           default:
             log("warn", `unhandled ext_notification: ${method}`);
         }
       },
     }),
   );
+
+  if (meta.promptDone) {
+    promptCompletion = enablePromptCompletion(agent);
+    void conn.closed.then(
+      () => promptCompletion?.close(),
+      () => promptCompletion?.close(),
+    );
+  }
 
   const config = meta.config;
 

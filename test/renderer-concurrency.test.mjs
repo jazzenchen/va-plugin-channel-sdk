@@ -123,6 +123,20 @@ test("system notifications are ordered per target and independent across targets
   ]);
 });
 
+test("turn completion waits for queued system notification delivery", async () => {
+  const renderer = new DelayedTextRenderer();
+  const channelTarget = target();
+
+  renderer.onPromptSent(channelTarget);
+  renderer.onSystemText(channelTarget, "first");
+
+  await renderer.onTurnEnd(channelTarget);
+
+  assert.deepEqual(renderer.sent, [
+    `${channelTargetKey(channelTarget)}:first`,
+  ]);
+});
+
 test("pending permissions are isolated by route and accept a new reply message", async () => {
   const renderer = new PendingPermissionRenderer();
   const firstTarget = target({ actorId: "bot-a", replyTo: "message-a" });
