@@ -78,8 +78,6 @@ import {
   tryParsePermissionAnswer,
 } from "./permissions.js";
 
-const MIN_EXACT_DUPLICATE_CHARS = 32;
-
 /**
  * Abstract base class for block-based rendering of ACP session streams.
  *
@@ -682,9 +680,6 @@ export abstract class BlockRenderer<TRef = string> {
     const normalizedMessageId = normalizeMessageId(messageId);
 
     const last = state.blocks.at(-1);
-    if (last && this.isDuplicateBlockDelta(last, kind, delta, normalizedMessageId)) {
-      return;
-    }
 
     if (
       last &&
@@ -721,20 +716,6 @@ export abstract class BlockRenderer<TRef = string> {
     }
 
     this.scheduleFlush(target, state);
-  }
-
-  private isDuplicateBlockDelta(
-    block: ManagedBlock<TRef>,
-    kind: BlockKind,
-    delta: string,
-    messageId: string | null,
-  ): boolean {
-    if (block.kind !== kind || !block.content) return false;
-    if (block.content !== delta) return false;
-    return (
-      sameMessageBlock(block.messageId, messageId) ||
-      delta.length >= MIN_EXACT_DUPLICATE_CHARS
-    );
   }
 
   private async sealActiveBlock(target: ChannelTarget): Promise<void> {

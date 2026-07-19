@@ -282,6 +282,44 @@ test("delivery failures remain isolated to their target", async () => {
   assert.deepEqual(renderer.completed, [healthyKey]);
 });
 
+test("equal long content with different message ids remains distinct", async () => {
+  const renderer = new RecordingRenderer();
+  const channelTarget = target();
+  const repeated = "same content must remain visible across messages";
+
+  renderer.onPromptSent(channelTarget);
+  renderer.onSessionUpdate(channelTarget, textChunk("session", repeated, "message-1"));
+  renderer.onSessionUpdate(channelTarget, textChunk("session", repeated, "message-2"));
+  await renderer.onTurnEnd(channelTarget);
+
+  assert.deepEqual(
+    renderer.sent.map(({ content }) => content),
+    [repeated, repeated],
+  );
+});
+
+test("repeated deltas remain content with or without a message id", async () => {
+  const renderer = new RecordingRenderer();
+  const withoutId = target({ replyTo: "without-id" });
+  const sameId = target({ replyTo: "same-id" });
+  const repeated = "the same long delta is still legitimate content";
+
+  renderer.onPromptSent(withoutId);
+  renderer.onSessionUpdate(withoutId, textChunk("session", repeated, undefined));
+  renderer.onSessionUpdate(withoutId, textChunk("session", repeated, undefined));
+  await renderer.onTurnEnd(withoutId);
+
+  renderer.onPromptSent(sameId);
+  renderer.onSessionUpdate(sameId, textChunk("session", repeated, "message-1"));
+  renderer.onSessionUpdate(sameId, textChunk("session", repeated, "message-1"));
+  await renderer.onTurnEnd(sameId);
+
+  assert.deepEqual(
+    renderer.sent.map(({ content }) => content),
+    [repeated + repeated, repeated + repeated],
+  );
+});
+
 test("pending permissions are isolated by route and accept a new reply message", async () => {
   const renderer = new PendingPermissionRenderer();
   const firstTarget = target({ actorId: "bot-a", replyTo: "message-a" });
