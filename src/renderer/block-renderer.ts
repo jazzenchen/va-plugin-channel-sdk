@@ -449,8 +449,9 @@ export abstract class BlockRenderer<TRef = string> {
    * directly (interactive buttons) or through `consumePendingText` parsing
    * the user's text reply.
    *
-   * Never rejects on render errors — falls back to the "reject_once" option
-   * if present, otherwise the first option, so the agent is never left hanging.
+   * Render errors fall back to reject_once. If the request offers no
+   * reject_once option, this rejects so the plugin boundary returns ACP
+   * cancelled instead of silently making a persistent choice for the user.
    */
   async requestPermission(
     target: ChannelTarget,
@@ -485,13 +486,13 @@ export abstract class BlockRenderer<TRef = string> {
       });
       this.pendingByRoute.set(routeKey, callbackId);
       Promise.resolve(this.onRequestPermission(target, request, callbackId)).catch((err) => {
-        // Render failed — fall back so the agent is never stuck.
+        // Render failed — reject or cancel so the agent is never stuck.
         if (!this.pendingPermissions.has(callbackId)) return;
         this.pendingPermissions.delete(callbackId);
         if (this.pendingByRoute.get(routeKey) === callbackId) {
           this.pendingByRoute.delete(routeKey);
         }
-        const fallback = fallbackOptionId(request);
+        const fallback = fallbackOptionId(request.options);
         if (fallback) {
           resolve(fallback);
         } else {
@@ -547,13 +548,8 @@ export abstract class BlockRenderer<TRef = string> {
       return true;
     }
 
-    // No match — implicit cancel as reject_once (safer than allow).
-    const rejectId =
-      entry.options.find((o) => o.kind === "reject_once")?.optionId ??
-      entry.options.find((o) => o.kind === "reject_always")?.optionId ??
-      entry.options[0]?.optionId ??
-      null;
-    this.resolvePermissionInternal(callbackId, rejectId);
+    // No match — reject once or cancel. Persistent rejection is a user choice.
+    this.resolvePermissionInternal(callbackId, fallbackOptionId(entry.options));
     return false;
   }
 
@@ -608,10 +604,7 @@ export abstract class BlockRenderer<TRef = string> {
     if (!entry) return;
     this.pendingPermissions.delete(callbackId);
 
-    const fallback =
-      entry.options.find((option) => option.kind === "reject_once")?.optionId ??
-      entry.options.find((option) => option.kind === "reject_always")?.optionId ??
-      entry.options[0]?.optionId;
+    const fallback = fallbackOptionId(entry.options);
     if (fallback) entry.resolve(fallback);
     else entry.reject(new Error("permission request cancelled because the turn ended"));
   }

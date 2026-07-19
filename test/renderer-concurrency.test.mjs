@@ -100,6 +100,12 @@ class PendingPermissionRenderer extends BlockRenderer {
   async onRequestPermission() {}
 }
 
+class FailingPermissionRenderer extends PendingPermissionRenderer {
+  async onRequestPermission() {
+    throw new Error("permission render failed");
+  }
+}
+
 function textChunk(sessionId, text, messageId) {
   return {
     sessionId,
@@ -328,6 +334,64 @@ test("turn completion clears only its target permission", async () => {
   assert.equal(renderer.consumePendingText(firstTarget, "1"), false);
   assert.equal(renderer.consumePendingText(secondTarget, "1"), true);
   assert.equal(await secondPermission, "allow");
+});
+
+test("permission render failure only falls back to reject_once", async () => {
+  const renderer = new FailingPermissionRenderer();
+  const rejectOnceRequest = {
+    sessionId: "session-a",
+    toolCall: { toolCallId: "tool-a", title: "dangerous tool" },
+    options: [
+      { kind: "allow_once", optionId: "allow", name: "Allow" },
+      { kind: "reject_once", optionId: "reject-once", name: "Reject" },
+    ],
+  };
+  const rejectAlwaysRequest = {
+    ...rejectOnceRequest,
+    options: [
+      { kind: "reject_always", optionId: "reject-always", name: "Always reject" },
+    ],
+  };
+
+  assert.equal(
+    await renderer.requestPermission(target(), rejectOnceRequest),
+    "reject-once",
+  );
+  await assert.rejects(
+    renderer.requestPermission(target(), rejectAlwaysRequest),
+    /permission render failed/,
+  );
+});
+
+test("implicit and turn-end permission cancellation never select an allow option", async () => {
+  const renderer = new PendingPermissionRenderer();
+  const implicitTarget = target({ replyTo: "implicit-cancel" });
+  const turnEndTarget = target({ replyTo: "turn-end-cancel" });
+  const request = {
+    sessionId: "session-a",
+    toolCall: { toolCallId: "tool-a", title: "dangerous tool" },
+    options: [
+      { kind: "reject_always", optionId: "reject-always", name: "Always reject" },
+    ],
+  };
+
+  const implicitPermission = renderer.requestPermission(implicitTarget, request);
+  const implicitCancelled = assert.rejects(
+    implicitPermission,
+    /permission request cancelled/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(renderer.consumePendingText(implicitTarget, "new prompt"), false);
+  await implicitCancelled;
+
+  const turnEndPermission = renderer.requestPermission(turnEndTarget, request);
+  const turnEndCancelled = assert.rejects(
+    turnEndPermission,
+    /permission request cancelled because the turn ended/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await renderer.onTurnEnd(turnEndTarget);
+  await turnEndCancelled;
 });
 
 test("target parser requires a complete route and preserves reply metadata", () => {
