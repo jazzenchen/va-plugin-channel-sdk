@@ -2,14 +2,12 @@
  * Permission-request helpers:
  *
  *   - `generateCallbackId` — monotonic short id for the pending-request map.
- *   - `fallbackOptionId`   — safe default when a UI render fails.
+ *   - `fallbackOptionId`   — safe fallback for automatic cancellation.
  *   - `tryParsePermissionAnswer` — parse a user text reply into an optionId.
  *
  * These live outside `BlockRenderer` so bots that parse replies ahead of time
  * (or that implement a custom renderer) can reuse the same matching logic.
  */
-
-import type { RequestPermissionRequest } from "@agentclientprotocol/sdk";
 
 let callbackCounter = 0;
 
@@ -19,14 +17,14 @@ export function generateCallbackId(): string {
 }
 
 /**
- * Pick a safe fallback option when render fails: prefer reject_once so the
- * agent cannot silently gain an unintended permission.
+ * Pick the only safe automatic fallback. `reject_always` records a persistent
+ * user choice, so render failures and implicit cancellation must never select
+ * it on the user's behalf.
  */
-export function fallbackOptionId(request: RequestPermissionRequest): string | null {
-  const opts = request.options ?? [];
-  const reject = opts.find((o) => o.kind === "reject_once");
-  if (reject) return reject.optionId;
-  return opts[0]?.optionId ?? null;
+export function fallbackOptionId(
+  options: ReadonlyArray<{ kind: string; optionId: string }> | undefined,
+): string | null {
+  return options?.find((option) => option.kind === "reject_once")?.optionId ?? null;
 }
 
 // ---------------------------------------------------------------------------
