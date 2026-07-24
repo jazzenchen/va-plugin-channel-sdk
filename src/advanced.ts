@@ -40,6 +40,7 @@ export type {
   ChannelRoute,
   ChannelTarget,
   ConversationScope,
+  OutboundFile,
   VerboseConfig,
   BlockRendererOptions,
   PluginCapabilities,
