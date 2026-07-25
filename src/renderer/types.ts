@@ -8,6 +8,7 @@
  * - Constants: flush interval, edit throttle, tool-summary cap, kind icons.
  */
 
+import type { ContentBlock } from "@agentclientprotocol/sdk";
 import type { BlockKind, ChannelTarget } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -17,7 +18,7 @@ import type { BlockKind, ChannelTarget } from "../types.js";
 export interface AgentMessageChunk {
   sessionUpdate: "agent_message_chunk";
   messageId?: string | null;
-  content?: { text?: string };
+  content?: ContentBlock;
 }
 
 export interface AgentThoughtChunk {

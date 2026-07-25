@@ -78,6 +78,7 @@ export type {
   ChannelSessionInfo,
   CommandEntry,
   ConversationScope,
+  OutboundFile,
   VerboseConfig,
   BlockRendererOptions,
 } from "./types.js";

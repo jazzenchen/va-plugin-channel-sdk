@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { BlockRenderer, channelTargetKey } from "../dist/index.js";
 import { parseChannelTarget } from "../dist/plugin.js";
@@ -29,6 +33,12 @@ class RecordingRenderer extends BlockRenderer {
   async sendBlock(channelTarget, kind, content) {
     this.sent.push({ target: channelTarget, kind, content });
     return `${channelTargetKey(channelTarget)}-${this.sent.length}`;
+  }
+}
+
+class FileRecordingRenderer extends RecordingRenderer {
+  async sendFile(channelTarget, file) {
+    this.sent.push({ target: channelTarget, kind: "file", file });
   }
 }
 
@@ -116,6 +126,83 @@ function textChunk(sessionId, text, messageId) {
     },
   };
 }
+
+function resourceChunk(sessionId, uri, name = "report.txt") {
+  return {
+    sessionId,
+    update: {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "resource_link", uri, name, mimeType: "text/plain" },
+      messageId: "resource-message",
+    },
+  };
+}
+
+function sessionInfo(workspacePath) {
+  return {
+    workspaceId: "workspace-a",
+    workspacePath,
+    threadId: "thread-a",
+    agent: { id: "codex", name: "Codex", version: "1.0", profileId: null },
+    sessionId: "session-a",
+    start: "new",
+  };
+}
+
+test("workspace resource links keep their place in the delivery order", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "va-sdk-files-"));
+  try {
+    const filePath = path.join(workspace, "report.txt");
+    await writeFile(filePath, "report");
+    const renderer = new FileRecordingRenderer();
+    const channelTarget = target();
+    renderer.onSessionInfo(channelTarget, sessionInfo(workspace));
+    await renderer.onTurnEnd(channelTarget);
+    renderer.sent.length = 0;
+
+    renderer.onPromptSent(channelTarget);
+    renderer.onSessionUpdate(channelTarget, textChunk("session-a", "before", "message-1"));
+    renderer.onSessionUpdate(
+      channelTarget,
+      resourceChunk("session-a", pathToFileURL(filePath).href),
+    );
+    renderer.onSessionUpdate(channelTarget, textChunk("session-a", "after", "message-2"));
+    await renderer.onTurnEnd(channelTarget);
+
+    assert.deepEqual(renderer.sent.map((item) => item.kind), ["text", "file", "text"]);
+    assert.equal(renderer.sent[1].file.path, await realpath(filePath));
+    assert.equal(renderer.sent[1].file.name, "report.txt");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("resource links outside the active workspace are not uploaded", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "va-sdk-workspace-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "va-sdk-outside-"));
+  try {
+    const filePath = path.join(outside, "secret.txt");
+    await writeFile(filePath, "secret");
+    const renderer = new FileRecordingRenderer();
+    const channelTarget = target();
+    renderer.onSessionInfo(channelTarget, sessionInfo(workspace));
+    await renderer.onTurnEnd(channelTarget);
+    renderer.sent.length = 0;
+
+    renderer.onPromptSent(channelTarget);
+    renderer.onSessionUpdate(
+      channelTarget,
+      resourceChunk("session-a", pathToFileURL(filePath).href, "secret.txt"),
+    );
+    await renderer.onTurnEnd(channelTarget);
+
+    assert.equal(renderer.sent.some((item) => item.kind === "file"), false);
+    assert.match(renderer.sent[0].content, /outside the active workspace/);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
 
 test("same chat with different actor, topic, or replyTo keeps isolated render state", async () => {
   const renderer = new RecordingRenderer();

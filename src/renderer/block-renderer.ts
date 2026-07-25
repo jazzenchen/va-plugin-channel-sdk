@@ -48,8 +48,12 @@
  * directly.
  */
 
+import { realpath, stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   RequestPermissionRequest,
+  ResourceLink,
   SessionNotification,
 } from "@agentclientprotocol/sdk";
 import type {
@@ -58,6 +62,7 @@ import type {
   ChannelSessionInfo,
   ChannelTarget,
   CommandEntry,
+  OutboundFile,
   VerboseConfig,
 } from "../types.js";
 import { channelRouteKey, channelTargetKey } from "../types.js";
@@ -102,6 +107,8 @@ export abstract class BlockRenderer<TRef = string> {
   /** Failures from fire-and-forget deliveries such as system text. Block
    *  deliveries keep their own recoverable error state. */
   private deliveryErrors = new Map<string, unknown>();
+  /** Workspace root supplied by the Host for each stable route. */
+  private workspacePaths = new Map<string, string>();
 
   /**
    * Pending permission requests, keyed by callback id. Resolvers are invoked
@@ -162,6 +169,12 @@ export abstract class BlockRenderer<TRef = string> {
     kind: BlockKind,
     content: string,
   ): Promise<TRef | null>;
+
+  /** Upload a workspace file to the platform. Unsupported plugins may omit it. */
+  protected sendFile?(
+    target: ChannelTarget,
+    file: OutboundFile,
+  ): Promise<void>;
 
   // ---------------------------------------------------------------------------
   // Optional overrides — plugin MAY implement these
@@ -246,8 +259,12 @@ export abstract class BlockRenderer<TRef = string> {
 
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
-        const delta = update.content?.text ?? "";
-        if (delta) this.appendToBlock(target, "text", delta, update.messageId);
+        if (update.content?.type === "text") {
+          const delta = update.content.text ?? "";
+          if (delta) this.appendToBlock(target, "text", delta, update.messageId);
+        } else if (update.content?.type === "resource_link") {
+          this.appendResourceLink(target, update.content);
+        }
         break;
       }
       case "agent_thought_chunk": {
@@ -364,6 +381,7 @@ export abstract class BlockRenderer<TRef = string> {
 
   /** Handle `va/session_info` from host. */
   onSessionInfo(target: ChannelTarget, info: ChannelSessionInfo): void {
+    this.rememberSessionInfo(target, info);
     const agentVersion = info.agent.version ? ` v${info.agent.version}` : "";
     const profile = info.agent.profileId ?? "default";
     const sessionLine =
@@ -382,6 +400,14 @@ export abstract class BlockRenderer<TRef = string> {
         ].join("\n"),
       ),
     );
+  }
+
+  /** Record route metadata when a plugin supplies its own session card. */
+  protected rememberSessionInfo(
+    target: ChannelTarget,
+    info: ChannelSessionInfo,
+  ): void {
+    this.workspacePaths.set(channelRouteKey(target), info.workspacePath);
   }
 
   /** @deprecated `va/session_info` carries the visible startup card. */
@@ -718,6 +744,71 @@ export abstract class BlockRenderer<TRef = string> {
     this.scheduleFlush(target, state);
   }
 
+  private appendResourceLink(target: ChannelTarget, resource: ResourceLink): void {
+    const state = this.ensureState(target);
+    if (state.flushTimer) {
+      clearTimeout(state.flushTimer);
+      state.flushTimer = null;
+    }
+    const last = state.blocks.at(-1);
+    if (last && !last.sealed) {
+      last.sealed = true;
+      this.enqueueFlush(state, last);
+    }
+    state.sendChain = state.sendChain
+      .then(() => this.enqueueDelivery(target, () => this.deliverResourceLink(target, resource)))
+      .catch((error) => {
+        this.recordDeliveryError(target, error);
+      });
+  }
+
+  private async deliverResourceLink(
+    target: ChannelTarget,
+    resource: ResourceLink,
+  ): Promise<void> {
+    const name = safeResourceName(resource.name, resource.uri);
+    let filePath: string;
+    try {
+      filePath = fileURLToPath(resource.uri);
+    } catch {
+      if (/^https?:\/\//i.test(resource.uri)) {
+        await this.sendText(target, `📎 ${name}\n${resource.uri}`);
+        return;
+      }
+      await this.sendText(target, `⚠️ ${name} was not sent because its resource URI is unsupported.`);
+      return;
+    }
+
+    const workspacePath = this.workspacePaths.get(channelRouteKey(target));
+    if (!workspacePath) {
+      throw new Error(`cannot send ${name}: active workspace is unavailable`);
+    }
+    const [workspaceRoot, resolvedFile] = await Promise.all([
+      realpath(workspacePath),
+      realpath(filePath),
+    ]);
+    if (!pathIsWithin(workspaceRoot, resolvedFile)) {
+      await this.sendText(
+        target,
+        `⚠️ ${name} was not sent because it is outside the active workspace.`,
+      );
+      return;
+    }
+    const metadata = await stat(resolvedFile);
+    if (!metadata.isFile()) {
+      throw new Error(`cannot send ${name}: resource is not a file`);
+    }
+    if (!this.sendFile) {
+      await this.sendText(target, `📎 ${name} (file upload is not supported by this channel)`);
+      return;
+    }
+    await this.sendFile(target, {
+      path: resolvedFile,
+      name,
+      mimeType: resource.mimeType ?? undefined,
+    });
+  }
+
   private async sealActiveBlock(target: ChannelTarget): Promise<void> {
     const state = this.states.get(channelTargetKey(target));
     if (!state) return;
@@ -858,6 +949,21 @@ export abstract class BlockRenderer<TRef = string> {
 
 function normalizeMessageId(messageId: string | null | undefined): string | null {
   return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+}
+
+function pathIsWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function safeResourceName(name: string, uri: string): string {
+  const supplied = path.posix.basename(name.replaceAll("\\", "/")).trim();
+  if (supplied && supplied !== "." && supplied !== "..") return supplied;
+  try {
+    return path.basename(fileURLToPath(uri)) || "attachment";
+  } catch {
+    return "attachment";
+  }
 }
 
 function sameMessageBlock(left: string | null, right: string | null): boolean {
