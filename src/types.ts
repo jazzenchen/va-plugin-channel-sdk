@@ -102,6 +102,15 @@ export interface ChannelTarget extends ChannelRoute {
   replyTo?: string;
 }
 
+/** A workspace file explicitly emitted by the agent as an ACP resource link. */
+export interface OutboundFile {
+  /** Canonical local path validated to remain inside the active workspace. */
+  path: string;
+  /** Safe display/upload filename. */
+  name: string;
+  mimeType?: string;
+}
+
 /** Stable route key for cross-message state such as a pending text permission. */
 export function channelRouteKey(route: ChannelRoute): string {
   return JSON.stringify([
