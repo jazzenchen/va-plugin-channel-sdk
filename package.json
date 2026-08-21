@@ -3,6 +3,10 @@
   "version": "0.6.8",
   "description": "VibeAround Plugin SDK — base classes and utilities for building channel plugins",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jazzenchen/va-plugin-channel-sdk.git"
+  },
   "type": "module",
   "files": [
     "dist",
