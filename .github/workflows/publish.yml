@@ -1,0 +1,116 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run every check and a publish dry run, but do not publish
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # draft the GitHub release
+  id-token: write   # OIDC token for npm trusted publishing
+
+jobs:
+  publish:
+    name: Publish @vibearound/plugin-channel-sdk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+
+      - name: Upgrade npm
+        # Trusted publishing needs npm >= 11.5.1; the bundled npm can be older.
+        run: npm install -g npm@latest
+
+      - name: Resolve version
+        id: meta
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+              echo "tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}" >&2
+              exit 1
+            fi
+            DRY_RUN=false
+          else
+            DRY_RUN="${{ inputs.dry_run }}"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "dry_run=${DRY_RUN}" >> "${GITHUB_OUTPUT}"
+          echo "@vibearound/plugin-channel-sdk ${VERSION} (dry_run=${DRY_RUN})"
+
+      - name: Refuse to republish
+        if: steps.meta.outputs.dry_run == 'false'
+        run: |
+          set -euo pipefail
+          version="${{ steps.meta.outputs.version }}"
+          if npm view "@vibearound/plugin-channel-sdk@${version}" version >/dev/null 2>&1; then
+            echo "@vibearound/plugin-channel-sdk@${version} is already on npm" >&2
+            exit 1
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: node --test test/*.test.mjs
+
+      - name: Verify the build output the package claims to ship
+        # dist/ is gitignored, so a checkout that skipped the build would
+        # publish a package whose "files" entry points do not exist.
+        run: |
+          set -euo pipefail
+          for file in dist/index.js dist/index.d.ts dist/advanced.js dist/advanced.d.ts; do
+            test -f "${file}" || { echo "missing ${file}" >&2; exit 1; }
+          done
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: steps.meta.outputs.dry_run == 'false'
+        # No NODE_AUTH_TOKEN: auth comes from the OIDC id-token via npm
+        # trusted publishing, configured on npmjs.com for this package.
+        run: npm publish --access public
+
+      - name: Publish dry run
+        if: steps.meta.outputs.dry_run != 'false'
+        run: npm publish --access public --dry-run
+
+      - name: Draft GitHub release
+        if: steps.meta.outputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.tag }}"
+          version="${{ steps.meta.outputs.version }}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "release ${tag} already exists"
+            exit 0
+          fi
+          gh release create "${tag}" \
+            --title "Channel SDK ${version}" \
+            --draft \
+            --notes "Published \`@vibearound/plugin-channel-sdk@${version}\` to npm.
+
+          Rewrite these notes with the SDK template before publishing the draft."
